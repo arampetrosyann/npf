@@ -1,2 +1,5 @@
 .
 pytest
+lida
+llmx
+openai

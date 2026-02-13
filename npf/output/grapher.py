@@ -76,15 +76,10 @@ import webcolors
 import pandas as pd
 
 try:
-    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    deepeye_local = os.path.join(repo_root, 'DeepEye-APIs')
-    if os.path.isdir(deepeye_local):
-        if deepeye_local not in sys.path:
-            sys.path.insert(0, deepeye_local)
-    import deepeye_pack
-    HAVE_DEEPEYE = True
+    from lida import Manager, TextGenerationConfig, llm
+    HAVE_LIDA = True
 except Exception:
-    HAVE_DEEPEYE = False
+    HAVE_LIDA = False
 
 graphcolor = [(31, 119, 180), (174, 199, 232), (255, 127, 14), (255, 187, 120),
               (44, 160, 44), (152, 223, 138), (214, 39, 40), (255, 152, 150),
@@ -659,12 +654,12 @@ class Grapher:
         if len(series) == 0:
             return
 
-        # Use DeepEye to export results and generate graphs
-        if HAVE_DEEPEYE:
+        # REMEBER TO SET OPENAI_API_KEY ENV VARIABLE FOR LIDA
+        if HAVE_LIDA:
             all_results_df = to_pandas(series)
 
             exp_folder = getattr(self.options, 'experiment_folder', '.') or '.'
-            dest_csv = os.path.join(exp_folder, 'npf_deepeye_input.csv')
+            dest_csv = os.path.join(exp_folder, 'npf_lida_input.csv')
 
             dest_dir = os.path.dirname(dest_csv)
 
@@ -673,14 +668,52 @@ class Grapher:
 
             all_results_df.to_csv(dest_csv, index=False)
 
-            dp = deepeye_pack.deepeye('npf')
-            dp.from_csv(dest_csv)
+            try:
+                text_gen = llm("openai", api_config={"temperature": 0, "seed": 42, "top_p": 1})
+            except Exception:
+                text_gen = None
 
-            dp.diversified_ranking()
-            dp.to_single_html()
+            lida = Manager(text_gen=text_gen) if text_gen else Manager()
+
+            summary = lida.summarize(dest_csv, summary_method="default")
+            goals = lida.goals(summary, n=3, persona="You are a data analyst focused on generating visualizations")
+
+            if goals:
+                for goal_idx, goal in enumerate(goals):
+                    charts = lida.visualize(summary=summary, goal=goal, library="matplotlib")
+
+                    if charts:
+                        chart = charts[0]
+                        output_png = os.path.join(exp_folder, f'npf_lida_viz_{goal_idx}.png')
+                        output_code = os.path.join(exp_folder, f'npf_lida_viz_{goal_idx}.py')
+
+                        if getattr(chart, "code", None):
+                            with open(output_code, "w", encoding="utf-8") as f:
+                                f.write(chart.code)
+
+                        if getattr(chart, "raster", None):
+                            raster = chart.raster
+                            try:
+                                import base64
+                                if isinstance(raster, str):
+                                    img_bytes = base64.b64decode(raster)
+                                else:
+                                    img_bytes = raster
+                                with open(output_png, "wb") as f:
+                                    f.write(img_bytes)
+                            except Exception:
+                                pass
+                        elif getattr(chart, "code", None) and library in ("matplotlib", "seaborn"):
+                            local_ctx = {"df": all_results_df, "pd": pd, "np": np, "plt": plt}
+                            try:
+                                exec(chart.code, local_ctx)
+                                plt.savefig(output_png, bbox_inches="tight")
+                            finally:
+                                plt.close("all")
+            else:
+                print("LIDA did not return any visualization goals")
         else:
-            if not HAVE_DEEPEYE:
-                print("DeepEye not available")
+            print("LIDA not available")
 
         # #If graph_series_as_variables, take the series and make them as variables
         # if self.config_bool('graph_series_as_variables',False):

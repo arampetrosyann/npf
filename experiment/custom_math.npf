@@ -14,6 +14,5 @@ var_format={RESULT:%d}
 N=[1-50]
 
 %script@client
-echo "RESULT-N $N"
 echo "RESULT-POW_2 $(( pow($N,2) ))"
 echo "RESULT-LOG $(( log($N) ))"
