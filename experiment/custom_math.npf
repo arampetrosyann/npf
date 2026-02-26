@@ -1,0 +1,19 @@
+%info
+f(x)
+
+A non-networking test to understand the basis of NPF
+
+%config
+n_runs=2
+default_repo=local //No program under test
+accept_zero={LOG} //Log may be "0" that is a valid number. By default NPF consider a test as failed is a value is 0
+var_unit={RESULT: }
+var_format={RESULT:%d}
+
+%variables
+N=[1-50]
+
+%script@client
+echo "RESULT-N $N"
+echo "RESULT-POW_2 $(( pow($N,2) ))"
+echo "RESULT-LOG $(( log($N) ))"
