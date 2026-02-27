@@ -75,6 +75,17 @@ import webcolors
 
 import pandas as pd
 
+try:
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    deepeye_local = os.path.join(repo_root, 'DeepEye-APIs')
+    if os.path.isdir(deepeye_local):
+        if deepeye_local not in sys.path:
+            sys.path.insert(0, deepeye_local)
+    import deepeye_pack
+    HAVE_DEEPEYE = True
+except Exception:
+    HAVE_DEEPEYE = False
+
 graphcolor = [(31, 119, 180), (174, 199, 232), (255, 127, 14), (255, 187, 120),
               (44, 160, 44), (152, 223, 138), (214, 39, 40), (255, 152, 150),
               (148, 103, 189), (197, 176, 213), (140, 86, 75), (196, 156, 148),
@@ -648,16 +659,39 @@ class Grapher:
         if len(series) == 0:
             return
 
-        #If graph_series_as_variables, take the series and make them as variables
-        if self.config_bool('graph_series_as_variables',False):
-            new_results = {}
-            vars_values['serie'] = set()
-            for test, build, all_results in series:
-                for run, run_results in all_results.items():
-                    run.variables['serie'] = build.pretty_name()
-                    vars_values['serie'].add(build.pretty_name())
-                    new_results[run] = run_results
-            series = [(test, build, new_results)]
+        # Use DeepEye to export results and generate graphs
+        if HAVE_DEEPEYE:
+            all_results_df = to_pandas(series)
+
+            exp_folder = getattr(self.options, 'experiment_folder', '.') or '.'
+            dest_csv = os.path.join(exp_folder, 'npf_deepeye_input.csv')
+
+            dest_dir = os.path.dirname(dest_csv)
+
+            if dest_dir and not os.path.exists(dest_dir):
+                os.makedirs(dest_dir, exist_ok=True)
+
+            all_results_df.to_csv(dest_csv, index=False)
+
+            dp = deepeye_pack.deepeye('npf')
+            dp.from_csv(dest_csv)
+
+            dp.diversified_ranking()
+            dp.to_single_html()
+        else:
+            if not HAVE_DEEPEYE:
+                print("DeepEye not available")
+
+        # #If graph_series_as_variables, take the series and make them as variables
+        # if self.config_bool('graph_series_as_variables',False):
+        #     new_results = {}
+        #     vars_values['serie'] = set()
+        #     for test, build, all_results in series:
+        #         for run, run_results in all_results.items():
+        #             run.variables['serie'] = build.pretty_name()
+        #             vars_values['serie'].add(build.pretty_name())
+        #             new_results[run] = run_results
+        #     series = [(test, build, new_results)]
 
         # Transform results to variables as the graph_result_as_variable config
         #  option. It is a dict in the format
@@ -674,20 +708,20 @@ class Grapher:
         # With CPU-(.*):LOAD it will create two runs
         # CPU=0 -> LOAD = 53
         # CPU=1 -> LOAD = 72
-        for result_types, var_name in self.configdict('graph_result_as_variable', {}).items():
-            exploded_series, exploded_vars_values = result_as_variable(series, result_types, var_name, vars_values)
-            self.graph_group(series=exploded_series, vars_values=exploded_vars_values, filename=filename, fileprefix = fileprefix, title=title)
+        # for result_types, var_name in self.configdict('graph_result_as_variable', {}).items():
+        #     exploded_series, exploded_vars_values = result_as_variable(series, result_types, var_name, vars_values)
+        #     self.graph_group(series=exploded_series, vars_values=exploded_vars_values, filename=filename, fileprefix = fileprefix, title=title)
 
 
-        self.graph_group(series, vars_values, filename=filename, fileprefix = fileprefix, title=title)
+        # self.graph_group(series, vars_values, filename=filename, fileprefix = fileprefix, title=title)
 
-        # Export to web format
-        if options.web is not None:
-            prepare_web_export(series, all_results_df, options.web)
+        # # Export to web format
+        # if options.web is not None:
+        #     prepare_web_export(series, all_results_df, options.web)
 
-        # Export to Jupyter notebook
-        if options.notebook_path is not None:
-            prepare_notebook_export(series, all_results_df, self.options, self.config)
+        # # Export to Jupyter notebook
+        # if options.notebook_path is not None:
+        #     prepare_notebook_export(series, all_results_df, self.options, self.config)
 
 
     def graph_group(self, series, vars_values, filename, fileprefix, title):
