@@ -5,6 +5,7 @@ import natsort
 import copy
 import traceback
 import sys
+import importlib
 
 from sklearn import tree
 
@@ -75,16 +76,30 @@ import webcolors
 
 import pandas as pd
 
+repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+for local_module_dir in [
+    os.path.join(repo_root, 'DeepEye-APIs'),
+    os.path.join(repo_root, 'Table2Charts-APIs'),
+    os.path.join(repo_root, 'Table2Charts'),
+    os.path.join(repo_root, 'Table2ChartsPublic'),
+]:
+    if os.path.isdir(local_module_dir) and local_module_dir not in sys.path:
+        sys.path.insert(0, local_module_dir)
+
+deepeye_pack = None
+table2charts_pack = None
+
 try:
-    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    deepeye_local = os.path.join(repo_root, 'DeepEye-APIs')
-    if os.path.isdir(deepeye_local):
-        if deepeye_local not in sys.path:
-            sys.path.insert(0, deepeye_local)
-    import deepeye_pack
+    deepeye_pack = importlib.import_module('deepeye_pack')
     HAVE_DEEPEYE = True
 except Exception:
     HAVE_DEEPEYE = False
+
+try:
+    table2charts_pack = importlib.import_module('table2charts_pack')
+    HAVE_TABLE2CHARTS = True
+except Exception:
+    HAVE_TABLE2CHARTS = False
 
 graphcolor = [(31, 119, 180), (174, 199, 232), (255, 127, 14), (255, 187, 120),
               (44, 160, 44), (152, 223, 138), (214, 39, 40), (255, 152, 150),
@@ -256,6 +271,57 @@ class Grapher:
             if var in script.config:
                 return script.config.get_dict_value(var,key,default=default,result_type=result_type)
         return default
+
+    def _export_recommender_csv(self, series, suffix):
+        all_results_df = to_pandas(series)
+        exp_folder = getattr(self.options, 'experiment_folder', '.') or '.'
+        dest_csv = os.path.join(exp_folder, suffix)
+        dest_dir = os.path.dirname(dest_csv)
+        if dest_dir and not os.path.exists(dest_dir):
+            os.makedirs(dest_dir, exist_ok=True)
+        all_results_df.to_csv(dest_csv, index=False)
+        return dest_csv
+
+    def _run_deepeye(self, series):
+        if not HAVE_DEEPEYE:
+            return False
+        try:
+            dest_csv = self._export_recommender_csv(series, 'npf_deepeye_input.csv')
+            dp = deepeye_pack.deepeye('npf')
+            dp.from_csv(dest_csv)
+            dp.diversified_ranking()
+            dp.to_single_html()
+            print("DeepEye graph recommendation generated")
+            return True
+        except Exception:
+            return False
+
+    def _run_table2charts(self, series):
+        if not HAVE_TABLE2CHARTS:
+            return False
+
+        try:
+            dest_csv = self._export_recommender_csv(series, 'npf_table2charts_input.csv')
+
+            print("Table2Charts graph recommendation generated")
+            return True
+        except Exception:
+            return False
+
+    def _run_graph_recommender(self, series):
+        backend = 'table2charts'
+
+        if backend == 'deepeye':
+            if not self._run_deepeye(series):
+                print("DeepEye not available")
+            return
+
+        if backend == 'table2charts':
+            if not self._run_table2charts(series):
+                print("Table2Charts not available")
+            return
+
+        print("No graph recommender backend available (DeepEye/Table2Charts)")
 
     def result_in_list(self, var, result_type):
         l = self.configlist(var, [])
@@ -659,28 +725,7 @@ class Grapher:
         if len(series) == 0:
             return
 
-        # Use DeepEye to export results and generate graphs
-        if HAVE_DEEPEYE:
-            all_results_df = to_pandas(series)
-
-            exp_folder = getattr(self.options, 'experiment_folder', '.') or '.'
-            dest_csv = os.path.join(exp_folder, 'npf_deepeye_input.csv')
-
-            dest_dir = os.path.dirname(dest_csv)
-
-            if dest_dir and not os.path.exists(dest_dir):
-                os.makedirs(dest_dir, exist_ok=True)
-
-            all_results_df.to_csv(dest_csv, index=False)
-
-            dp = deepeye_pack.deepeye('npf')
-            dp.from_csv(dest_csv)
-
-            dp.diversified_ranking()
-            dp.to_single_html()
-        else:
-            if not HAVE_DEEPEYE:
-                print("DeepEye not available")
+        self._run_graph_recommender(series)
 
         # #If graph_series_as_variables, take the series and make them as variables
         # if self.config_bool('graph_series_as_variables',False):
