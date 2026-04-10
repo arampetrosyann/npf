@@ -71,20 +71,34 @@ import matplotlib.transforms as mtransforms
 import itertools
 import math
 import os
+import pickle
 from importlib import import_module
 import webcolors
 
 import pandas as pd
 
 try:
+    draco_module = import_module('draco')
     schema_module = import_module('draco.schema')
     renderer_module = import_module('draco.renderer.altair.altair_renderer')
 
+    Draco = draco_module.Draco
+    dict_to_facts = draco_module.dict_to_facts
+    answer_set_to_dict = draco_module.answer_set_to_dict
     schema_from_dataframe = schema_module.schema_from_dataframe
     AltairRenderer = renderer_module.AltairRenderer
+
+    try:
+        learn_module = import_module('draco.learn')
+        train_draco_model = learn_module.train_model
+        HAVE_DRACO_LEARN = True
+    except Exception:
+        HAVE_DRACO_LEARN = False
+
     HAVE_DRACO = True
 except Exception:
     HAVE_DRACO = False
+    HAVE_DRACO_LEARN = False
 
 graphcolor = [(31, 119, 180), (174, 199, 232), (255, 127, 14), (255, 187, 120),
               (44, 160, 44), (152, 223, 138), (214, 39, 40), (255, 152, 150),
@@ -205,30 +219,45 @@ class Grapher:
         self.scripts = set()
         self._config_cache = {}
 
-    def _build_draco_spec(self, all_results_df):
+    def _build_draco_specs_recommended(self, all_results_df, k=5):
         schema = schema_from_dataframe(all_results_df)
 
-        x_field = list(all_results_df.columns)[2] # pow field
-        y_field = list(all_results_df.columns)[3] # log field
+        asp_spec = dict_to_facts(schema)
 
-        partial_spec = schema | {
-            "task": "summary",
-            "view": [
-                {
-                    "mark": [
-                        {
-                            "type": "point",
-                            "encoding": [
-                                {"channel": "x", "field": x_field},
-                                {"channel": "y", "field": y_field},
-                            ]
-                        }
-                    ],
-                }
-            ],
-        }
+        draco_engine = Draco()
 
-        return partial_spec
+        try:
+            k = max(1, int(k))
+        except Exception:
+            k = 5
+
+        recommendations = draco_engine.complete_spec(asp_spec, models=k)
+        completed_specs = []
+
+        for model in recommendations:
+            completed_spec = answer_set_to_dict(model.answer_set)
+
+            if self._is_valid_draco_spec(completed_spec, all_results_df, draco_engine):
+                completed_specs.append(completed_spec)
+
+        return completed_specs
+
+    #! sometimes the generated Draco spec result is not valid 
+    def _is_valid_draco_spec(self, completed_spec, all_results_df, draco_engine):
+        """Validate a decoded Draco spec before adding it to recommendations."""
+        if not isinstance(completed_spec, dict):
+            return False
+
+        if "view" not in completed_spec:
+            return False
+
+        try:
+            # Ensure the renderer accepts this specification.
+            AltairRenderer().render(completed_spec, all_results_df)
+        except Exception:
+            return False
+
+        return True
 
     def config_bool(self, var, default=None):
         val = self.config(var, default)
@@ -701,22 +730,21 @@ class Grapher:
 
                 all_results_df.to_csv(dest_csv, index=False)
 
-                completed_spec = self._build_draco_spec(all_results_df)
+                top_k = 10 #! get 10 results
 
-                with open(dest_json, 'w') as f:
-                    import json
-                    json.dump(completed_spec, f, indent=2)
+                completed_specs = self._build_draco_specs_recommended(all_results_df, k=top_k)
 
-                chart = AltairRenderer().render(completed_spec, all_results_df)
-                chart.save(dest_html)
-
-                try:
-                    chart.save(dest_png)
-                    print("Draco chart image written to %s" % dest_png)
-                except Exception:
-                    print("Could not write Draco PNG image (missing image backend?)")
-
-                print("Draco chart written to %s" % dest_html)
+                if len(completed_specs) > 0:
+                    for i, spec in enumerate(completed_specs, start=0):
+                        top_html = os.path.join(exp_folder, 'npf_draco_output_top%d.html' % i)
+                        top_png = os.path.join(exp_folder, 'npf_draco_output_top%d.png' % i)
+                        top_chart = AltairRenderer().render(spec, all_results_df)
+                        top_chart.save(top_html)
+                        try:
+                            top_chart.save(top_png)
+                        except Exception:
+                            pass
+                    print("Draco top-%d recommendations written to %s" % (len(completed_specs), exp_folder))
             except Exception:
                 print("Draco not available or failed to render chart")
                 traceback.print_exc()
