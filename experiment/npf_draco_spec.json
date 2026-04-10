@@ -1,0 +1,65 @@
+{
+  "number_rows": 100,
+  "field": [
+    {
+      "name": "N",
+      "type": "number",
+      "unique": 50,
+      "entropy": 3912,
+      "min": 1,
+      "max": 50,
+      "std": 14,
+      "skew": 0
+    },
+    {
+      "name": "y_N",
+      "type": "number",
+      "unique": 50,
+      "entropy": 3912,
+      "min": 1,
+      "max": 50,
+      "std": 14,
+      "skew": 0
+    },
+    {
+      "name": "y_POW_2",
+      "type": "number",
+      "unique": 50,
+      "entropy": 3912,
+      "min": 1,
+      "max": 2500,
+      "std": 762,
+      "skew": 0
+    },
+    {
+      "name": "y_LOG",
+      "type": "number",
+      "unique": 50,
+      "entropy": 3912,
+      "min": 0,
+      "max": 3,
+      "std": 0,
+      "skew": -1
+    }
+  ],
+  "task": "summary",
+  "view": [
+    {
+      "mark": [
+        {
+          "type": "point",
+          "encoding": [
+            {
+              "channel": "x",
+              "field": "y_POW_2"
+            },
+            {
+              "channel": "y",
+              "field": "y_LOG"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

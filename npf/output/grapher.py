@@ -71,20 +71,20 @@ import matplotlib.transforms as mtransforms
 import itertools
 import math
 import os
+from importlib import import_module
 import webcolors
 
 import pandas as pd
 
 try:
-    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    deepeye_local = os.path.join(repo_root, 'DeepEye-APIs')
-    if os.path.isdir(deepeye_local):
-        if deepeye_local not in sys.path:
-            sys.path.insert(0, deepeye_local)
-    import deepeye_pack
-    HAVE_DEEPEYE = True
+    schema_module = import_module('draco.schema')
+    renderer_module = import_module('draco.renderer.altair.altair_renderer')
+
+    schema_from_dataframe = schema_module.schema_from_dataframe
+    AltairRenderer = renderer_module.AltairRenderer
+    HAVE_DRACO = True
 except Exception:
-    HAVE_DEEPEYE = False
+    HAVE_DRACO = False
 
 graphcolor = [(31, 119, 180), (174, 199, 232), (255, 127, 14), (255, 187, 120),
               (44, 160, 44), (152, 223, 138), (214, 39, 40), (255, 152, 150),
@@ -204,6 +204,31 @@ class Grapher:
     def __init__(self):
         self.scripts = set()
         self._config_cache = {}
+
+    def _build_draco_spec(self, all_results_df):
+        schema = schema_from_dataframe(all_results_df)
+
+        x_field = list(all_results_df.columns)[2] # pow field
+        y_field = list(all_results_df.columns)[3] # log field
+
+        partial_spec = schema | {
+            "task": "summary",
+            "view": [
+                {
+                    "mark": [
+                        {
+                            "type": "point",
+                            "encoding": [
+                                {"channel": "x", "field": x_field},
+                                {"channel": "y", "field": y_field},
+                            ]
+                        }
+                    ],
+                }
+            ],
+        }
+
+        return partial_spec
 
     def config_bool(self, var, default=None):
         val = self.config(var, default)
@@ -659,28 +684,44 @@ class Grapher:
         if len(series) == 0:
             return
 
-        # Use DeepEye to export results and generate graphs
-        if HAVE_DEEPEYE:
-            all_results_df = to_pandas(series)
+        # Use Draco to export results and generate a chart preview.
+        if HAVE_DRACO:
+            try:
+                all_results_df = to_pandas(series)
 
-            exp_folder = getattr(self.options, 'experiment_folder', '.') or '.'
-            dest_csv = os.path.join(exp_folder, 'npf_deepeye_input.csv')
+                exp_folder = getattr(self.options, 'experiment_folder', '.') or '.'
+                dest_csv = os.path.join(exp_folder, 'npf_draco_input.csv')
+                dest_html = os.path.join(exp_folder, 'npf_draco_output.html')
+                dest_png = os.path.join(exp_folder, 'npf_draco_output.png')
+                dest_json = os.path.join(exp_folder, 'npf_draco_spec.json')
 
-            dest_dir = os.path.dirname(dest_csv)
+                dest_dir = os.path.dirname(dest_csv)
+                if dest_dir and not os.path.exists(dest_dir):
+                    os.makedirs(dest_dir, exist_ok=True)
 
-            if dest_dir and not os.path.exists(dest_dir):
-                os.makedirs(dest_dir, exist_ok=True)
+                all_results_df.to_csv(dest_csv, index=False)
 
-            all_results_df.to_csv(dest_csv, index=False)
+                completed_spec = self._build_draco_spec(all_results_df)
 
-            dp = deepeye_pack.deepeye('npf')
-            dp.from_csv(dest_csv)
+                with open(dest_json, 'w') as f:
+                    import json
+                    json.dump(completed_spec, f, indent=2)
 
-            dp.diversified_ranking()
-            dp.to_single_html()
+                chart = AltairRenderer().render(completed_spec, all_results_df)
+                chart.save(dest_html)
+
+                try:
+                    chart.save(dest_png)
+                    print("Draco chart image written to %s" % dest_png)
+                except Exception:
+                    print("Could not write Draco PNG image (missing image backend?)")
+
+                print("Draco chart written to %s" % dest_html)
+            except Exception:
+                print("Draco not available or failed to render chart")
+                traceback.print_exc()
         else:
-            if not HAVE_DEEPEYE:
-                print("DeepEye not available")
+            print("Draco not available")
 
         # #If graph_series_as_variables, take the series and make them as variables
         # if self.config_bool('graph_series_as_variables',False):
@@ -1619,8 +1660,8 @@ class Grapher:
             return False
         if is_numeric(prec):
             prec = get_numeric(prec)
-        elif type(prec) is list and is_numeric(prec[idx]):
-            prec = get_numeric(prec[idx])
+        elif type(prec) is list and len(prec) > 0 and is_numeric(prec[0]):
+            prec = get_numeric(prec[0])
         else:
             prec = 2
         return prec
