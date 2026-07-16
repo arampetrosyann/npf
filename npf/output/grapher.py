@@ -75,6 +75,8 @@ import webcolors
 
 import pandas as pd
 
+from lida import Manager, TextGenerationConfig, llm
+
 graphcolor = [(31, 119, 180), (174, 199, 232), (255, 127, 14), (255, 187, 120),
               (44, 160, 44), (152, 223, 138), (214, 39, 40), (255, 152, 150),
               (148, 103, 189), (197, 176, 213), (140, 86, 75), (196, 156, 148),
@@ -649,16 +651,75 @@ class Grapher:
         if len(series) == 0:
             return
 
-        #If graph_series_as_variables, take the series and make them as variables
-        if self.config_bool('graph_series_as_variables',False):
-            new_results = {}
-            vars_values['serie'] = set()
-            for test, build, all_results in series:
-                for run, run_results in all_results.items():
-                    run.variables['serie'] = build.pretty_name()
-                    vars_values['serie'].add(build.pretty_name())
-                    new_results[run] = run_results
-            series = [(test, build, new_results)]
+        # REMEBER TO SET OPENAI_API_KEY ENV VARIABLE FOR LIDA
+        if True:
+            all_results_df = to_pandas(series)
+
+            exp_folder = getattr(self.options, 'experiment_folder', '.') or '.'
+            dest_csv = os.path.join(exp_folder, 'npf_lida_input.csv')
+
+            dest_dir = os.path.dirname(dest_csv)
+
+            if dest_dir and not os.path.exists(dest_dir):
+                os.makedirs(dest_dir, exist_ok=True)
+
+            all_results_df.to_csv(dest_csv, index=False)
+
+            try:
+                text_gen = llm("openai", api_config={"temperature": 0, "seed": 42, "top_p": 1})
+            except Exception:
+                text_gen = None
+
+            lida = Manager(text_gen=text_gen) if text_gen else Manager()
+
+            summary = lida.summarize(dest_csv, summary_method="default")
+            goals = lida.goals(summary, n=3, persona="You are a data analyst focused on generating visualizations")
+
+            if goals:
+                for goal_idx, goal in enumerate(goals):
+                    charts = lida.visualize(summary=summary, goal=goal, library="matplotlib")
+
+                    if charts:
+                        chart = charts[0]
+                        output_png = os.path.join(exp_folder, f'npf_lida_viz_{goal_idx}.png')
+                        output_code = os.path.join(exp_folder, f'npf_lida_viz_{goal_idx}.py')
+
+                        if getattr(chart, "code", None):
+                            with open(output_code, "w", encoding="utf-8") as f:
+                                f.write(chart.code)
+
+                        if getattr(chart, "raster", None):
+                            raster = chart.raster
+                            try:
+                                import base64
+                                if isinstance(raster, str):
+                                    img_bytes = base64.b64decode(raster)
+                                else:
+                                    img_bytes = raster
+                                with open(output_png, "wb") as f:
+                                    f.write(img_bytes)
+                            except Exception:
+                                pass
+                        elif getattr(chart, "code", None) and library in ("matplotlib", "seaborn"):
+                            local_ctx = {"df": all_results_df, "pd": pd, "np": np, "plt": plt}
+                            try:
+                                exec(chart.code, local_ctx)
+                                plt.savefig(output_png, bbox_inches="tight")
+                            finally:
+                                plt.close("all")
+            else:
+                print("LIDA did not return any visualization goals")
+
+        # #If graph_series_as_variables, take the series and make them as variables
+        # if self.config_bool('graph_series_as_variables',False):
+        #     new_results = {}
+        #     vars_values['serie'] = set()
+        #     for test, build, all_results in series:
+        #         for run, run_results in all_results.items():
+        #             run.variables['serie'] = build.pretty_name()
+        #             vars_values['serie'].add(build.pretty_name())
+        #             new_results[run] = run_results
+        #     series = [(test, build, new_results)]
 
         # Transform results to variables as the graph_result_as_variable config
         #  option. It is a dict in the format
@@ -675,21 +736,20 @@ class Grapher:
         # With CPU-(.*):LOAD it will create two runs
         # CPU=0 -> LOAD = 53
         # CPU=1 -> LOAD = 72
-        for result_types, var_name in self.configdict('graph_result_as_variable', {}).items():
-            var_unit = self.scriptconfig("var_unit", var_name, default="")
-            exploded_series, exploded_vars_values = result_as_variable(series, result_types, var_name, vars_values, var_unit = var_unit)
-            self.graph_group(series=exploded_series, vars_values=exploded_vars_values, filename=filename, fileprefix = fileprefix, title=title)
+        # for result_types, var_name in self.configdict('graph_result_as_variable', {}).items():
+        #     exploded_series, exploded_vars_values = result_as_variable(series, result_types, var_name, vars_values)
+        #     self.graph_group(series=exploded_series, vars_values=exploded_vars_values, filename=filename, fileprefix = fileprefix, title=title)
 
 
         ret = self.graph_group(series, vars_values, filename=filename, fileprefix = fileprefix, title=title)
 
-        # Export to web format
-        if options.web is not None:
-            prepare_web_export(series, all_results_df, options.web)
+        # # Export to web format
+        # if options.web is not None:
+        #     prepare_web_export(series, all_results_df, options.web)
 
-        # Export to Jupyter notebook
-        if options.notebook_path is not None:
-            prepare_notebook_export(series, all_results_df, self.options, self.config)
+        # # Export to Jupyter notebook
+        # if options.notebook_path is not None:
+        #     prepare_notebook_export(series, all_results_df, self.options, self.config)
 
         return ret
 

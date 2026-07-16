@@ -38,7 +38,10 @@ install_requires = [
     'scikit-optimize',
     'colorama',
     'scikit-optimize',
-    'lark'
+    'lark',
+    'lida',
+    'llmx',
+    'openai'
     ]
 
 setuptools.setup(
