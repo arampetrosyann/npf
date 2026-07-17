@@ -651,64 +651,76 @@ class Grapher:
         if len(series) == 0:
             return
 
-        # REMEBER TO SET OPENAI_API_KEY ENV VARIABLE FOR LIDA
         if True:
-            all_results_df = to_pandas(series)
+            results_df = to_pandas(series)
 
-            exp_folder = getattr(self.options, 'experiment_folder', '.') or '.'
-            dest_csv = os.path.join(exp_folder, 'npf_lida_input.csv')
+            results_df.drop(columns=['index', 'test_index', 'run_index', 'build'], inplace=True, errors='ignore')
 
-            dest_dir = os.path.dirname(dest_csv)
+            exp_folder = getattr(self.options, 'experiment_folder', '.')
 
-            if dest_dir and not os.path.exists(dest_dir):
-                os.makedirs(dest_dir, exist_ok=True)
+            lida_library = self.config("graph_generation_library", "matplotlib")
+            configured_api_key = self.config("graph_openai_api_key", None)
 
-            all_results_df.to_csv(dest_csv, index=False)
+            env_api_key = os.environ.get("OPENAI_API_KEY", "").strip() or None
+
+            default_library = "matplotlib"
+
+            if not lida_library:
+                lida_library = default_library
+            else:
+                lida_library = str(lida_library).strip()
+                if not lida_library:
+                    lida_library = default_library
+
+            if configured_api_key is not None:
+                configured_api_key = str(configured_api_key).strip()
+
+            if env_api_key and not configured_api_key:
+                configured_api_key = env_api_key
 
             try:
-                text_gen = llm("openai", api_config={"temperature": 0, "seed": 42, "top_p": 1})
+                text_gen = llm("openai", api_key=configured_api_key)
             except Exception:
+                print("LIDA failed to generate visualizations")
                 text_gen = None
 
-            lida = Manager(text_gen=text_gen) if text_gen else Manager()
+            try:
+                lida = Manager(text_gen=text_gen) if text_gen else Manager()
 
-            summary = lida.summarize(dest_csv, summary_method="default")
-            goals = lida.goals(summary, n=3, persona="You are a data analyst focused on generating visualizations")
+                summary = lida.summarize(results_df, summary_method="default")
+                goals = lida.goals(summary, n=3, persona="You are a data analyst focused on generating visualizations")
 
-            if goals:
-                for goal_idx, goal in enumerate(goals):
-                    charts = lida.visualize(summary=summary, goal=goal, library="matplotlib")
+                if goals:
+                    for goal_idx, goal in enumerate(goals):
+                        charts = lida.visualize(summary=summary, goal=goal, library=lida_library)
 
-                    if charts:
-                        chart = charts[0]
-                        output_png = os.path.join(exp_folder, f'npf_lida_viz_{goal_idx}.png')
-                        output_code = os.path.join(exp_folder, f'npf_lida_viz_{goal_idx}.py')
+                        if charts:
+                            chart = charts[0]
 
-                        if getattr(chart, "code", None):
-                            with open(output_code, "w", encoding="utf-8") as f:
-                                f.write(chart.code)
+                            output_png = os.path.join(exp_folder, f'npf_lida_viz_{goal_idx}.png')
+                            output_code = os.path.join(exp_folder, f'npf_lida_viz_{goal_idx}.py')
 
-                        if getattr(chart, "raster", None):
-                            raster = chart.raster
-                            try:
-                                import base64
-                                if isinstance(raster, str):
-                                    img_bytes = base64.b64decode(raster)
-                                else:
-                                    img_bytes = raster
-                                with open(output_png, "wb") as f:
-                                    f.write(img_bytes)
-                            except Exception:
-                                pass
-                        elif getattr(chart, "code", None) and library in ("matplotlib", "seaborn"):
-                            local_ctx = {"df": all_results_df, "pd": pd, "np": np, "plt": plt}
-                            try:
-                                exec(chart.code, local_ctx)
-                                plt.savefig(output_png, bbox_inches="tight")
-                            finally:
-                                plt.close("all")
-            else:
-                print("LIDA did not return any visualization goals")
+                            if getattr(chart, "code", None):
+                                with open(output_code, "w", encoding="utf-8") as f:
+                                    f.write(chart.code)
+
+                            if getattr(chart, "raster", None):
+                                raster = chart.raster
+                                try:
+                                    import base64
+                                    if isinstance(raster, str):
+                                        img_bytes = base64.b64decode(raster)
+                                    else:
+                                        img_bytes = raster
+                                    with open(output_png, "wb") as f:
+                                        f.write(img_bytes)
+                                        f.close()
+                                except Exception:
+                                    pass
+                else:
+                    print("LIDA did not return any visualization goals")
+            except Exception as e:
+                print("LIDA visualization failed: %s" % e)
 
         # #If graph_series_as_variables, take the series and make them as variables
         # if self.config_bool('graph_series_as_variables',False):

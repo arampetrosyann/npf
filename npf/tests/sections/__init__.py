@@ -636,6 +636,8 @@ class SectionConfig(SectionVariable):
         self.__add("graph_show_fliers", True)
         self.__add_dict("graph_cross_reference", {})
         self.__add_dict("graph_background", {})
+        self.__add("graph_generation_library", "matplotlib")
+        self.__add("graph_openai_api_key", None)
         self.__add_dict("var_round", {})
         self.__add_dict("var_aggregate", {})
         self.__add_dict("var_drawstyle", {})

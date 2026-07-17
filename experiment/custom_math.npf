@@ -9,6 +9,8 @@ default_repo=local //No program under test
 accept_zero={LOG} //Log may be "0" that is a valid number. By default NPF consider a test as failed is a value is 0
 var_unit={RESULT: }
 var_format={RESULT:%d}
+graph_openai_api_key=Key
+graph_generation_library=matplotlib
 
 %variables
 N=[1-50]
