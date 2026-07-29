@@ -38,7 +38,12 @@ install_requires = [
     'scikit-optimize',
     'colorama',
     'scikit-optimize',
-    'lark'
+    'lark',
+    # Graphing: Lux recommends/compiles Vis → Vega-Lite; vl-convert renders PDF/PNG
+    'altair',
+    'vega',
+    'lux-api',
+    'vl-convert-python',
     ]
 
 setuptools.setup(

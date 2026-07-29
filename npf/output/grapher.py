@@ -1,4 +1,5 @@
 import io
+import json
 import math
 import re
 import natsort
@@ -76,15 +77,11 @@ import webcolors
 import pandas as pd
 
 try:
-    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    deepeye_local = os.path.join(repo_root, 'DeepEye-APIs')
-    if os.path.isdir(deepeye_local):
-        if deepeye_local not in sys.path:
-            sys.path.insert(0, deepeye_local)
-    import deepeye_pack
-    HAVE_DEEPEYE = True
+    import lux
+    import vl_convert as vlc
+    HAVE_LUX = True
 except Exception:
-    HAVE_DEEPEYE = False
+    HAVE_LUX = False
 
 graphcolor = [(31, 119, 180), (174, 199, 232), (255, 127, 14), (255, 187, 120),
               (44, 160, 44), (152, 223, 138), (214, 39, 40), (255, 152, 150),
@@ -204,6 +201,49 @@ class Grapher:
     def __init__(self):
         self.scripts = set()
         self._config_cache = {}
+
+    def export_lux_vegalite(self, dataframe, experiment_folder):
+        if not HAVE_LUX or dataframe is None:
+            return []
+
+        lux_df = lux.LuxDataFrame(dataframe)
+
+        # set intent
+        excluded_cols = {"index", "build", "test_index", "run_index"}    
+        candidate_cols = [col for col in lux_df.columns if col not in excluded_cols]
+
+        if candidate_cols and len(lux_df.columns) != len(candidate_cols):
+            lux_df.intent = candidate_cols
+
+        if hasattr(lux_df, "maintain_recs"):
+            lux_df.maintain_recs()
+            lux_df.maintain_metadata()
+
+        recommendations = []
+        for rec_group in getattr(lux_df, "recommendation", {}).values():
+            recommendations.extend(rec_group)
+
+        export_paths = []
+        for idx, vis in enumerate(recommendations[:5]): 
+            spec = vis.to_vegalite(prettyOutput=False)
+
+            spec_path = os.path.join(experiment_folder, f"npf_lux_spec_{idx + 1}.json")
+            png_path = os.path.join(experiment_folder, f"npf_lux_spec_{idx + 1}.png")
+            pdf_path = os.path.join(experiment_folder, f"npf_lux_spec_{idx + 1}.pdf")
+
+            with open(spec_path, "w", encoding="utf-8") as handle:
+                json.dump(spec, handle, indent=2)
+
+            try:
+                with open(png_path, "wb") as handle:
+                    handle.write(vlc.vegalite_to_png(spec))
+                with open(pdf_path, "wb") as handle:
+                    handle.write(vlc.vegalite_to_pdf(spec))
+                export_paths.extend([spec_path, png_path, pdf_path])
+            except Exception:
+                export_paths.append(spec_path)
+
+        return export_paths
 
     def config_bool(self, var, default=None):
         val = self.config(var, default)
@@ -599,6 +639,7 @@ class Grapher:
             return
 
         # Add series to a pandas dataframe
+        all_results_df = None
         if options.pandas_filename is not None or options.web is not None or options.notebook_path is not None:
             all_results_df = to_pandas(series)
 
@@ -659,28 +700,19 @@ class Grapher:
         if len(series) == 0:
             return
 
-        # Use DeepEye to export results and generate graphs
-        if HAVE_DEEPEYE:
-            all_results_df = to_pandas(series)
-
+        if HAVE_LUX:
             exp_folder = getattr(self.options, 'experiment_folder', '.') or '.'
-            dest_csv = os.path.join(exp_folder, 'npf_deepeye_input.csv')
 
-            dest_dir = os.path.dirname(dest_csv)
+            if all_results_df is None:
+                all_results_df = to_pandas(series)
 
-            if dest_dir and not os.path.exists(dest_dir):
-                os.makedirs(dest_dir, exist_ok=True)
-
-            all_results_df.to_csv(dest_csv, index=False)
-
-            dp = deepeye_pack.deepeye('npf')
-            dp.from_csv(dest_csv)
-
-            dp.diversified_ranking()
-            dp.to_single_html()
+            export_paths = self.export_lux_vegalite(all_results_df, exp_folder)
+            if export_paths:
+                print("Wrote Lux Vega-Lite artifacts to %s" % ", ".join(export_paths))
+            else:
+                print("Lux did not produce any visualizations from the current data")
         else:
-            if not HAVE_DEEPEYE:
-                print("DeepEye not available")
+            print("Lux not available; falling back to Matplotlib plots")
 
         # #If graph_series_as_variables, take the series and make them as variables
         # if self.config_bool('graph_series_as_variables',False):
@@ -1619,8 +1651,8 @@ class Grapher:
             return False
         if is_numeric(prec):
             prec = get_numeric(prec)
-        elif type(prec) is list and is_numeric(prec[idx]):
-            prec = get_numeric(prec[idx])
+        elif type(prec) is list and len(prec) > 0 and is_numeric(prec[0]):
+            prec = get_numeric(prec[0])
         else:
             prec = 2
         return prec
