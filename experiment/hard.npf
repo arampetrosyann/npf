@@ -1,0 +1,24 @@
+%info
+f(x)
+
+A non-networking test
+
+%config
+n_runs=2
+default_repo=local
+accept_zero={LOG}
+var_unit={RESULT: }
+var_format={RESULT:%d}
+
+%variables
+A=[2*600]
+B={bbr,cubic}
+C=[1-2]
+D=[16*500]
+E={low,high}
+F=55
+
+%script@client
+echo "RESULT-RES $(( ($A+$D) * 2 ))"
+
+

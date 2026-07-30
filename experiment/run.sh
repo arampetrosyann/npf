@@ -1,8 +1,8 @@
 #!/bin/bash -
 
 # npf file
-NPF_SCRIPT_1="custom_math.npf"
-NPF_SCRIPT_2="iperf-advanced.npf"
+NPF_SCRIPT_1="hard.npf"
+NPF_SCRIPT_2="iperf-bytes.npf"
 # Path for logs
 LOG_FILE="npf_results.log"
 # Path for results
