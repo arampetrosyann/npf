@@ -6,6 +6,8 @@ import natsort
 import copy
 import traceback
 import sys
+import importlib.util
+import pkgutil
 
 from sklearn import tree
 
@@ -76,12 +78,23 @@ import webcolors
 
 import pandas as pd
 
+if not hasattr(pkgutil, "find_loader"):
+	def _find_loader(name: str):
+		spec = importlib.util.find_spec(name)
+		if spec is None:
+			return None
+		return spec.loader
+
+	pkgutil.find_loader = _find_loader
+
+LUX_IMPORT_ERROR = None
 try:
     import lux
     import vl_convert as vlc
     HAVE_LUX = True
-except Exception:
+except Exception as exc:
     HAVE_LUX = False
+    LUX_IMPORT_ERROR = exc
 
 graphcolor = [(31, 119, 180), (174, 199, 232), (255, 127, 14), (255, 187, 120),
               (44, 160, 44), (152, 223, 138), (214, 39, 40), (255, 152, 150),
@@ -208,12 +221,23 @@ class Grapher:
 
         lux_df = lux.LuxDataFrame(dataframe)
 
-        # set intent
-        excluded_cols = {"index", "build", "test_index", "run_index"}    
-        candidate_cols = [col for col in lux_df.columns if col not in excluded_cols]
+        lux_df.drop(columns=["index", "build", "test_index", "run_index"], inplace=True, errors="ignore")
 
-        if candidate_cols and len(lux_df.columns) != len(candidate_cols):
-            lux_df.intent = candidate_cols
+        # set intent  
+        y_cols = [col for col in lux_df.columns if col.startswith("y_")]
+        other_cols = [col for col in lux_df.columns if col not in y_cols]
+        other_cols_concated = "|".join(other_cols)
+
+        intent = []
+
+        if other_cols:
+            intent.append(other_cols_concated)
+
+        if y_cols:
+            intent.extend(y_cols)
+
+        if intent:
+            lux_df.intent = intent
 
         if hasattr(lux_df, "maintain_recs"):
             lux_df.maintain_recs()
@@ -224,7 +248,7 @@ class Grapher:
             recommendations.extend(rec_group)
 
         export_paths = []
-        for idx, vis in enumerate(recommendations[:5]): 
+        for idx, vis in enumerate(recommendations[:3]): 
             spec = vis.to_vegalite(prettyOutput=False)
 
             spec_path = os.path.join(experiment_folder, f"npf_lux_spec_{idx + 1}.json")
@@ -234,14 +258,14 @@ class Grapher:
             with open(spec_path, "w", encoding="utf-8") as handle:
                 json.dump(spec, handle, indent=2)
 
-            try:
-                with open(png_path, "wb") as handle:
-                    handle.write(vlc.vegalite_to_png(spec))
-                with open(pdf_path, "wb") as handle:
-                    handle.write(vlc.vegalite_to_pdf(spec))
-                export_paths.extend([spec_path, png_path, pdf_path])
-            except Exception:
-                export_paths.append(spec_path)
+            # try:
+            with open(png_path, "wb") as handle:
+                handle.write(vlc.vegalite_to_png(vl_spec=spec, scale=2))
+            with open(pdf_path, "wb") as handle:
+                handle.write(vlc.vegalite_to_pdf(vl_spec=spec))
+            export_paths.extend([spec_path, png_path, pdf_path])
+            # except Exception:
+            #     export_paths.append(spec_path)
 
         return export_paths
 
@@ -713,6 +737,8 @@ class Grapher:
                 print("Lux did not produce any visualizations from the current data")
         else:
             print("Lux not available; falling back to Matplotlib plots")
+            if LUX_IMPORT_ERROR is not None:
+                print("Lux import error: %s" % LUX_IMPORT_ERROR)
 
         # #If graph_series_as_variables, take the series and make them as variables
         # if self.config_bool('graph_series_as_variables',False):

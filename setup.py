@@ -6,7 +6,7 @@ with open("README.md", "r") as fh:
 
 install_requires = [
     'require-python-3',
-    'pandas',
+    'pandas<3',
     'numpy',
     'regex',
     'matplotlib',
@@ -41,7 +41,6 @@ install_requires = [
     'lark',
     # Graphing: Lux recommends/compiles Vis → Vega-Lite; vl-convert renders PDF/PNG
     'altair',
-    'vega',
     'lux-api',
     'vl-convert-python',
     ]
