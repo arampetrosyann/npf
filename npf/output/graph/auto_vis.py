@@ -109,53 +109,34 @@ def _vis_to_vegalite(vis, df: pd.DataFrame, title: Optional[str] = None) -> dict
     return spec
 
 def _pick_auto_vis(ldf, result_type: str, Clause):
-    """
-    Tell Lux we care about the result metric; let it choose which variables
-    """
-    intent = [result_type]
-    ldf.intent = intent
+    var_cols = [c for c in ldf.columns if c != result_type and c != "build"]
+    max_wildcards = min(2, len(var_cols))
 
-    # Force Lux recommendation computation
-    _ = ldf.recommendation
+    for n_wildcards in range(max_wildcards, -1, -1):
+        intent = [result_type] + [Clause("?")] * n_wildcards
+        ldf.intent = intent
+        # Clear cached recs so Lux recomputes for this intent
+        if hasattr(ldf, "_recommendation"):
+            ldf._recommendation = {}
+        if hasattr(ldf, "_rec_info"):
+            ldf._rec_info = []
 
-    # if getattr(ldf, "current_vis", None):
-    #     try:
-    #         if len(ldf.current_vis) > 0:
-    #             return ldf.current_vis[0]
-    #     except Exception:
-    #         pass
+        try:
+            recs = ldf.recommendation or {}
+        except Exception as e:
+            print(f"WARNING: Lux recommendation failed for intent {intent}: {e}")
+            continue
 
-    recs = ldf.recommendation or {}
-    print(f"recs: {recs}")
-    # for action in ("Enhance", "Correlation", "Filter", "Occurrence", "Temporal", "Generalize"):
-    #     vislist = recs.get(action)
-    #     print(f"vislist: {vislist}")
-    #     if not vislist:
-    #         continue
-    #     for vis in vislist:
-    #         try:
-    #             attrs = {
-    #                 getattr(c, "attribute", None)
-    #                 for c in (
-    #                     vis.get_attr_by_channel("x")
-    #                     + vis.get_attr_by_channel("y")
-    #                     + vis.get_attr_by_channel("color")
-    #                 )
-    #             }
-    #         except Exception:
-    #             attrs = set()
-    #             try:
-    #                 attrs = {c.attribute for c in vis._inferred_intent}
-    #             except Exception:
-    #                 pass
-    #         if result_type in attrs or not attrs:
-    #             return vis
-    #     if len(vislist) > 0:
-    #         return vislist[0]
+        vis = None
 
-    for vislist in recs.values():
-        if vislist and len(vislist) > 0:
-            return vislist[0]
+        for vislist in (recs or {}).values():
+            if vislist and len(vislist) > 0:
+                vis = vislist[0]
+                break
+
+        if vis is not None:
+            return vis
+
     return None
 
 def lux_auto_chart(
