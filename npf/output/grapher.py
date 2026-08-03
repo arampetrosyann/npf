@@ -31,6 +31,7 @@ from collections import OrderedDict
 from typing import List
 import numpy as np
 from math import log, pow
+from matplotlib.ticker import Formatter, NullLocator
 
 from npf.models.series import Series
 from npf.models.dataset import Run, group_val, var_divider
