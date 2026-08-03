@@ -1,10 +1,12 @@
-from typing import List
+from typing import List, Optional
 import pandas as pd
 
 from npf.models.series import Series
 
-def to_pandas(series: List[Series]):
+def to_pandas(series: List[Series], float_format: Optional[str] = None):
     all_results_df = pd.DataFrame() # Empty dataframe
+    if float_format is not None:
+        pd.options.display.float_format = float_format
     for test, build, all_results in series:
         for i, (x,results) in enumerate(all_results.items()):
             if len(results) == 0:

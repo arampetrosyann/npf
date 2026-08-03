@@ -6,7 +6,7 @@ with open("README.md", "r") as fh:
 
 install_requires = [
     'require-python-3',
-    'pandas',
+    'pandas<3',
     'numpy',
     'regex',
     'matplotlib',
@@ -38,7 +38,9 @@ install_requires = [
     'scikit-optimize',
     'colorama',
     'scikit-optimize',
-    'lark'
+    'lark',
+    'lux-api',
+    'vl-convert-python'
     ]
 
 setuptools.setup(
