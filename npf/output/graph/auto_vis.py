@@ -249,28 +249,13 @@ def save_chart(
         with open(code_path, "w", encoding="utf-8") as f:
             f.write(chart["code"])
 
-def _vstack_chart_rasters(charts: List[Dict[str, Any]]) -> bytes:
-    """Stack multiple chart images vertically into one image."""
-    images = [PILImage.open(BytesIO(c["raster"])).convert("RGBA") for c in charts]
-    width = max(im.width for im in images)
-    height = sum(im.height for im in images)
-    canvas = PILImage.new("RGBA", (width, height), (255, 255, 255, 255))
-    y = 0
-    for im in images:
-        canvas.paste(im, (0, y))
-        y += im.height
-    out = BytesIO()
-    canvas.convert("RGB").save(out, format="PNG")
-    return out.getvalue()
-
 def plot_graphs_with_lida(grapher, graphs, filename, fileprefix, f_series=None) -> Dict[str, Any]:
     """
     LIDA-based replacement for Grapher.plot_graphs.
 
-    One automatic chart per result metric. Each GraphData keeps its own title
-    (important for subplots). Chart data comes from ``f_series`` when provided
-    (series before series_to_graph / variable-to-series extraction) so all Run
-    variables remain columns for LIDA.
+    One automatic chart per result metric. Chart data comes from ``f_series``
+    when provided (series before series_to_graph / variable-to-series extraction)
+    so all Run variables remain columns for LIDA.
     """
     import npf
 
@@ -281,68 +266,47 @@ def plot_graphs_with_lida(grapher, graphs, filename, fileprefix, f_series=None) 
 
     # Still materialize XYEB once so --output CSV side-effects keep working
     _ = graph.dataset(kind=fileprefix)
-    one_test, one_build, _ = (
-        f_series[0] if f_series is not None else graph.series[0]
-    )
+
+    chart_series = f_series if f_series is not None else graph.series
+    if len(chart_series) == 0:
+        return {}
+
+    one_test, one_build, _ = chart_series[0]
 
     if grapher.options.no_graph:
         return {}
 
     ret: Dict[str, Any] = {}
-
-    result_types: Set[str] = set()
-    if f_series is not None:
-        result_types.update(collect_result_types(f_series))
-    else:
-        for g in graphs:
-            result_types.update(collect_result_types(g.series))
+    
+    title = graph.subtitle if graph.subtitle else graph.title
+    result_types = collect_result_types(chart_series)
 
     for result_type in sorted(result_types):
-        charts_for_graphs = []
-        for g in graphs:
-            title = g.subtitle if g.subtitle else g.title
-            chart_series = f_series if f_series is not None else g.series
-            try:
-                chart = build_chart_for_result(
-                    grapher,
-                    result_type=result_type,
-                    series=chart_series,
-                    title=title,
-                )
-            except Exception as e:
-                print(f"ERROR: LIDA failed for {result_type}: {e}")
-                traceback.print_exc()
-                chart = None
-            if chart is not None:
-                charts_for_graphs.append(chart)
+        try:
+            chart = build_chart_for_result(
+                grapher,
+                result_type=result_type,
+                series=chart_series,
+                title=title,
+            )
+        except Exception as e:
+            print(f"ERROR: LIDA failed for {result_type}: {e}")
+            traceback.print_exc()
+            chart = None
 
-        if not charts_for_graphs:
+        if chart is None:
             continue
-
-        if len(charts_for_graphs) == 1:
-            final_chart = charts_for_graphs[0]
-        else:
-            final_chart = {
-                "raster": _vstack_chart_rasters(charts_for_graphs),
-                "code": "\n\n# ---\n\n".join(
-                    c["code"] for c in charts_for_graphs if c.get("code")
-                ),
-                "library": charts_for_graphs[0].get("library"),
-                "status": True,
-                "result_type": result_type,
-                "title": None,
-            }
 
         out_key = result_type
 
         if grapher.return_fig:
             ret[out_key] = {
-                "code": final_chart.get("code"),
-                "library": final_chart.get("library"),
+                "code": chart.get("code"),
+                "library": chart.get("library"),
                 "result_type": result_type,
             }
         elif not filename:
-            ret[out_key] = final_chart["raster"]
+            ret[out_key] = chart["raster"]
         else:
             type_filename = npf.build_filename(
                 one_test,
@@ -354,7 +318,7 @@ def plot_graphs_with_lida(grapher, graphs, filename, fileprefix, f_series=None) 
                 show_serie=False,
             )
             try:
-                save_chart(final_chart, type_filename, save_code=True)
+                save_chart(chart, type_filename, save_code=True)
                 print("Graph saved to %s" % type_filename)
                 ret[out_key] = None
             except Exception as e:
