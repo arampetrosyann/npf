@@ -230,10 +230,9 @@ def plot_graphs_with_lux(grapher, graphs, filename, fileprefix, f_series=None) -
     """
     Lux-based replacement for Grapher.plot_graphs.
 
-    One automatic chart per result metric. Each GraphData keeps its own title
-    (important for subplots). Chart data comes from ``f_series`` when provided
-    (series before series_to_graph / variable-to-series extraction) so all Run
-    variables remain columns for Lux.
+    One automatic chart per result metric. Chart data comes from ``f_series``
+    when provided (series before series_to_graph / variable-to-series extraction)
+    so all Run variables remain columns for Lux.
     """
     import npf
 
@@ -244,9 +243,10 @@ def plot_graphs_with_lux(grapher, graphs, filename, fileprefix, f_series=None) -
 
     # Still materialize XYEB once so --output CSV side-effects keep working
     _ = graph.dataset(kind=fileprefix)
-    one_test, one_build, _ = (
-        f_series[0] if f_series is not None else graph.series[0]
-    )
+    chart_series = f_series if f_series is not None else graph.series
+    if len(chart_series) == 0:
+        return {}
+    one_test, one_build, _ = chart_series[0]
 
     if grapher.options.no_graph:
         return {}
@@ -255,45 +255,25 @@ def plot_graphs_with_lux(grapher, graphs, filename, fileprefix, f_series=None) -
     dpi = getattr(grapher.options, "graph_dpi", 300) or 300
     scale = max(1.0, float(dpi) / 150.0)
 
-    # Prefer pre-extraction series so promoted dyn vars stay columns !!!!! REVIEW THIS
-    result_types: Set[str] = set()
-    if f_series is not None:
-        result_types.update(collect_result_types(f_series))
-    else:
-        for g in graphs:
-            result_types.update(collect_result_types(g.series))
+    title = graph.subtitle if graph.subtitle else graph.title
+    result_types = collect_result_types(chart_series)
 
     for result_type in sorted(result_types):
-        specs_for_graphs = []
-        for g in graphs:
-            title = g.subtitle if g.subtitle else g.title
-            chart_series = f_series if f_series is not None else g.series
-            spec = build_chart_for_result(
-                grapher,
-                result_type=result_type,
-                series=chart_series,
-                title=title,
-            )
-            if spec is not None:
-                specs_for_graphs.append(spec)
-
-        if not specs_for_graphs:
+        spec = build_chart_for_result(
+            grapher,
+            result_type=result_type,
+            series=chart_series,
+            title=title,
+        )
+        if spec is None:
             continue
-
-        if len(specs_for_graphs) == 1:
-            final_spec = specs_for_graphs[0]
-        else:
-            final_spec = {
-                "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-                "vconcat": specs_for_graphs,
-            }
 
         out_key = result_type
 
         if grapher.return_fig:
-            ret[out_key] = final_spec
+            ret[out_key] = spec
         elif not filename:
-            ret[out_key] = render_vegalite(final_spec, fmt="png", scale=scale)
+            ret[out_key] = render_vegalite(spec, fmt="png", scale=scale)
         else:
             type_filename = npf.build_filename(
                 one_test,
@@ -305,7 +285,7 @@ def plot_graphs_with_lux(grapher, graphs, filename, fileprefix, f_series=None) -
                 show_serie=False,
             )
             try:
-                save_chart(final_spec, type_filename, dpi_scale=scale, also_save_vl=True)
+                save_chart(spec, type_filename, dpi_scale=scale, also_save_vl=True)
                 print("Graph saved to %s" % type_filename)
                 ret[out_key] = None
             except Exception as e:
