@@ -1,60 +1,90 @@
 """
-Lux → Vega-Lite → static chart rendering for NPF.
+LIDA → automatic chart generation for NPF.
 
-Fully automatic: plot type, marks, scales, and layout are chosen by Lux.
-User graph_%config / graph_type options are intentionally ignored here.
+Fully automatic: plot type, marks, scales, and layout are chosen by LIDA (LLM).
+Configurable via %config: graph_openai_api_key, graph_generation_library.
 
 Flow:
-  GraphData.series → to_pandas → one-metric DataFrame (real variable columns)
-                    →  LuxDataFrame (intent = result metric; Lux picks related vars)
-                    →  Vega-Lite JSON (to_vegalite)
-                    →  PNG/PDF via vl-convert
+  series → to_pandas → one-metric DataFrame (real variable columns)
+        → LIDA summarize + visualize (goal focused on the metric)
+        → raster PNG/PDF (+ optional chart code sidecar)
 """
 
 from __future__ import annotations
 
-import json
+import base64
 import os
-import types
+import sys
 import traceback
-import warnings
+from io import BytesIO
 from typing import Any, Dict, List, Optional, Set
+from PIL import Image as PILImage
 
 import pandas as pd
 
+from npf.globals import npf_root_path
 from npf.output.transform.pandas import to_pandas
 
-def _ensure_lux_pandas_compat():
-    """Lux 0.5.x probes pandas.io.gbq, which was removed in recent pandas."""
-    if not hasattr(pd.io, "gbq"):
-        gbq = types.ModuleType("pandas.io.gbq")
+def _ensure_local_lida():
+    local = os.path.join(npf_root_path(), "lida")
 
-        class _Dummy:
-            pass
+    if os.path.isdir(os.path.join(local, "lida")):
+        return local
 
-        gbq.DataFrame = _Dummy
-        import sys
+    raise RuntimeError(
+        f"Vendored LIDA fork not found at {local}. "
+        "Clone/fork LIDA into the NPF repo as ./lida."
+    )
 
-        sys.modules["pandas.io.gbq"] = gbq
-        pd.io.gbq = gbq
+def _load_openai_api_key(grapher):
+    """
+    Resolve the OpenAI API key from the grapher config or environment variable.
+    """
+    cfg = grapher.config("graph_openai_api_key", None)
 
-def _import_lux():
-    _ensure_lux_pandas_compat()
-    import lux
-    from lux.vis.Vis import Vis
-    from lux import Clause
+    if cfg is not None and str(cfg).strip():
+        return str(cfg).strip()
 
-    lux.config.plotting_backend = "vegalite"
-    lux.config.topk = 1
-    lux.config.number_of_bars = 20
-    lux.config.plotting_scale = 2
-    lux.config.sort = "descending"
-    return lux, Vis, Clause
+    value = os.environ.get("OPENAI_API_KEY")
 
-def _import_vl_convert():
-    import vl_convert as vlc
+    if value and value.strip():
+        return value.strip()
 
-    return vlc
+    print("ERROR: OpenAI API key not found. Set the OPENAI_API_KEY environment variable or graph_openai_api_key in the .npf %config.")
+
+    return None
+
+def _import_lida():
+    _ensure_local_lida()
+    from lida import Manager, TextGenerationConfig, llm, goal_for_metric
+
+    return Manager, TextGenerationConfig, llm, goal_for_metric
+
+def _get_lida_manager(grapher):
+    Manager, TextGenerationConfig, llm, _goal_for_metric = _import_lida()
+    api_key = _load_openai_api_key(grapher)
+
+    if api_key is None:
+        return None, None, None
+
+    text_gen = llm("openai", api_key=api_key)
+    manager = Manager(text_gen=text_gen)
+    config = TextGenerationConfig(
+        n=1,
+        temperature=0,
+        top_p=1,
+        seed=42
+    )
+    
+    return manager, config, _goal_for_metric
+
+def _generation_library(grapher) -> str:
+    cfg = grapher.config("graph_generation_library", None)
+
+    if cfg is None or not str(cfg).strip():
+        return "matplotlib"
+    
+    return str(cfg).strip()
 
 def series_result_to_dataframe(series, result_type: str) -> pd.DataFrame:
     """
@@ -69,11 +99,12 @@ def series_result_to_dataframe(series, result_type: str) -> pd.DataFrame:
     # Drop other metrics and indices that the system should not treat as dimensions
     drop_cols = [c for c in df.columns if c.startswith("y_") and c != y_col]
     drop_cols += [c for c in ("test_index", "run_index") if c in df.columns]
-    
+
     df.drop(columns=drop_cols, inplace=True, errors="ignore")
     df.rename(columns={y_col: result_type}, inplace=True)
-    
+
     return df
+
 
 def collect_result_types(series) -> List[str]:
     """Discover metric names present in series"""
@@ -83,69 +114,38 @@ def collect_result_types(series) -> List[str]:
             types.update(run_results.keys())
     return sorted(types)
 
-def _inline_vegalite_data(spec: dict, df: pd.DataFrame) -> dict:
-    """Ensure Vega-Lite carries inline values (vl-convert friendly)."""
-    if "datasets" in spec and isinstance(spec.get("data"), dict) and "name" in spec["data"]:
-        name = spec["data"]["name"]
-        if name in spec["datasets"]:
-            spec["data"] = {"values": spec["datasets"][name]}
-            del spec["datasets"]
-    elif not (isinstance(spec.get("data"), dict) and "values" in spec["data"]):
-        plain = pd.DataFrame(df)
-        spec["data"] = {"values": json.loads(plain.to_json(orient="records"))}
-    spec.pop("params", None)
-    spec.pop("vislib", None)
-    return spec
-
-def _vis_to_vegalite(vis, df: pd.DataFrame, title: Optional[str] = None) -> dict:
-    spec = vis.to_vegalite(prettyOutput=False)
-    if isinstance(spec, str):
-        spec = json.loads(spec)
-    if not isinstance(spec, dict):
-        raise RuntimeError(f"Unexpected Vega-Lite type: {type(spec)}")
-    spec = _inline_vegalite_data(spec, df)
-    if title:
-        spec["title"] = title
-    return spec
-
-def _pick_auto_vis(ldf, result_type: str, Clause):
-    var_cols = [c for c in ldf.columns if c != result_type and c != "build"]
-    max_wildcards = min(2, len(var_cols))
-
-    for n_wildcards in range(max_wildcards, -1, -1):
-        intent = [result_type] + [Clause("?")] * n_wildcards
-        ldf.intent = intent
-        # Clear cached recs so Lux recomputes for this intent
-        if hasattr(ldf, "_recommendation"):
-            ldf._recommendation = {}
-        if hasattr(ldf, "_rec_info"):
-            ldf._rec_info = []
-
+def _chart_raster_bytes(chart) -> Optional[bytes]:
+    raster = getattr(chart, "raster", None)
+    if not raster:
+        return None
+    if isinstance(raster, bytes):
+        return raster
+    if isinstance(raster, str):
+        # LIDA typically returns a base64-encoded PNG string
         try:
-            recs = ldf.recommendation or {}
-        except Exception as e:
-            print(f"WARNING: Lux recommendation failed for intent {intent}: {e}")
-            continue
-
-        vis = None
-
-        for vislist in (recs or {}).values():
-            if vislist and len(vislist) > 0:
-                vis = vislist[0]
-                break
-
-        if vis is not None:
-            return vis
-
+            return base64.b64decode(raster)
+        except Exception:
+            return raster.encode("utf-8")
     return None
 
-def lux_auto_chart(
+def _png_to_pdf_bytes(png_bytes: bytes) -> bytes:
+    image = PILImage.open(BytesIO(png_bytes)).convert("RGB")
+    out = BytesIO()
+    image.save(out, format="PDF")
+    return out.getvalue()
+
+def lida_auto_chart(
     df: pd.DataFrame,
     *,
     result_type: str,
     title: Optional[str] = None,
-) -> Optional[dict]:
-    """Run Lux automatically on a multi-variable DataFrame; return Vega-Lite dict."""
+    grapher=None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Run LIDA on a multi-variable DataFrame focused on ``result_type``.
+
+    Returns a dict with keys: raster (bytes), code (str), library, status.
+    """
     if df is None or df.empty:
         return None
     if result_type not in df.columns:
@@ -156,20 +156,54 @@ def lux_auto_chart(
     if df.empty:
         return None
 
-    lux, _Vis, Clause = _import_lux()
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        ldf = lux.LuxDataFrame(df.copy())
-        print(f"{ldf}")
-        vis = _pick_auto_vis(ldf, result_type, Clause)
-        print(f"ldf.columns: {ldf.columns}")
-        print(f"ldf.dtypes: {ldf.dtypes}")
-        print(f"ldf.intent: {ldf.intent}")
-        print(f"vis: {vis}")
-        if vis is None:
-            print(f"WARNING: Lux produced no visualizations for {result_type}")
-            return None
-        return _vis_to_vegalite(vis, ldf, title=title)
+    library = _generation_library(grapher)
+
+    manager, textgen_config, goal_for_metric = _get_lida_manager(grapher)
+
+    if manager is None or textgen_config is None or goal_for_metric is None:
+        return None
+
+    summary = manager.summarize(
+        df,
+        summary_method="default",
+        textgen_config=textgen_config,
+    )
+
+    # Goal text is modified in the LIDA fork (lida/components/goal.py)
+    goal = goal_for_metric(result_type, title=title)
+    charts = manager.visualize(
+        summary=summary,
+        goal=goal,
+        textgen_config=textgen_config,
+        library=library,
+        return_error=True,
+    )
+
+    if not charts:
+        print(f"WARNING: LIDA produced no visualizations for {result_type}")
+        return None
+
+    chart = charts[0]
+    status = getattr(chart, "status", True)
+    error = getattr(chart, "error", None)
+
+    if status is False or error:
+        print(f"WARNING: LIDA chart error for {result_type}: {error}")
+        return None
+
+    raster = _chart_raster_bytes(chart)
+    if raster is None:
+        print(f"WARNING: LIDA chart for {result_type} has no image data")
+        return None
+
+    return {
+        "raster": raster,
+        "code": getattr(chart, "code", None),
+        "library": library,
+        "status": True,
+        "result_type": result_type,
+        "title": title,
+    }
 
 def build_chart_for_result(
     grapher,
@@ -177,63 +211,66 @@ def build_chart_for_result(
     result_type: str,
     series,
     title: Optional[str],
-) -> Optional[dict]:
+) -> Optional[Dict[str, Any]]:
     """
-    Produce a Vega-Lite spec for one result metric via Lux auto-visualization.
+    Produce one LIDA chart for a result metric.
     """
     df = series_result_to_dataframe(series, result_type)
 
     if df.empty:
         return None
 
-    return lux_auto_chart(df, result_type=result_type, title=title)
-
-def render_vegalite(
-    spec: dict,
-    *,
-    fmt: str = "pdf",
-    scale: float = 2.0,
-) -> bytes:
-    """Render a Vega-Lite dict to PNG or PDF bytes via vl-convert."""
-    vlc = _import_vl_convert()
-    fmt = fmt.lower().lstrip(".")
-
-    if fmt == "png":
-        return vlc.vegalite_to_png(vl_spec=spec, scale=scale)
-    if fmt == "svg":
-        return vlc.vegalite_to_svg(vl_spec=spec).encode("utf-8")
-    if fmt in ("pdf",):
-        return vlc.vegalite_to_pdf(vl_spec=spec)
-    return vlc.vegalite_to_pdf(vl_spec=spec)
+    return lida_auto_chart(
+        df,
+        result_type=result_type,
+        title=title,
+        grapher=grapher,
+    )
 
 def save_chart(
-    spec: dict,
+    chart: Dict[str, Any],
     path: str,
     *,
-    dpi_scale: float = 2.0,
-    also_save_vl: bool = True,
+    save_code: bool = True,
 ) -> None:
-    """Write chart bytes (and optional .vl.json) to disk."""
-    ext = os.path.splitext(path)[1].lower().lstrip(".") or "pdf"
-    data = render_vegalite(spec, fmt=ext, scale=dpi_scale)
+    """Write the chart raster as PDF, and optionally the generated LIDA code."""
     parent = os.path.dirname(path)
     if parent and not os.path.exists(parent):
         os.makedirs(parent, exist_ok=True)
-    with open(path, "wb") as f:
-        f.write(data)
-    if also_save_vl:
-        vl_path = os.path.splitext(path)[0] + ".vl.json"
-        with open(vl_path, "w") as f:
-            json.dump(spec, f, indent=2)
 
-def plot_graphs_with_lux(grapher, graphs, filename, fileprefix, f_series=None) -> Dict[str, Any]:
+    if not path.lower().endswith(".pdf"):
+        path = os.path.splitext(path)[0] + ".pdf"
+
+    with open(path, "wb") as f:
+        f.write(_png_to_pdf_bytes(chart["raster"]))
+
+    if save_code and chart.get("code"):
+        code_path = os.path.splitext(path)[0] + ".py"
+        with open(code_path, "w", encoding="utf-8") as f:
+            f.write(chart["code"])
+
+def _vstack_chart_rasters(charts: List[Dict[str, Any]]) -> bytes:
+    """Stack multiple chart images vertically into one image."""
+    images = [PILImage.open(BytesIO(c["raster"])).convert("RGBA") for c in charts]
+    width = max(im.width for im in images)
+    height = sum(im.height for im in images)
+    canvas = PILImage.new("RGBA", (width, height), (255, 255, 255, 255))
+    y = 0
+    for im in images:
+        canvas.paste(im, (0, y))
+        y += im.height
+    out = BytesIO()
+    canvas.convert("RGB").save(out, format="PNG")
+    return out.getvalue()
+
+def plot_graphs_with_lida(grapher, graphs, filename, fileprefix, f_series=None) -> Dict[str, Any]:
     """
-    Lux-based replacement for Grapher.plot_graphs.
+    LIDA-based replacement for Grapher.plot_graphs.
 
     One automatic chart per result metric. Each GraphData keeps its own title
     (important for subplots). Chart data comes from ``f_series`` when provided
     (series before series_to_graph / variable-to-series extraction) so all Run
-    variables remain columns for Lux.
+    variables remain columns for LIDA.
     """
     import npf
 
@@ -252,10 +289,7 @@ def plot_graphs_with_lux(grapher, graphs, filename, fileprefix, f_series=None) -
         return {}
 
     ret: Dict[str, Any] = {}
-    dpi = getattr(grapher.options, "graph_dpi", 300) or 300
-    scale = max(1.0, float(dpi) / 150.0)
 
-    # Prefer pre-extraction series so promoted dyn vars stay columns !!!!! REVIEW THIS
     result_types: Set[str] = set()
     if f_series is not None:
         result_types.update(collect_result_types(f_series))
@@ -264,36 +298,51 @@ def plot_graphs_with_lux(grapher, graphs, filename, fileprefix, f_series=None) -
             result_types.update(collect_result_types(g.series))
 
     for result_type in sorted(result_types):
-        specs_for_graphs = []
+        charts_for_graphs = []
         for g in graphs:
             title = g.subtitle if g.subtitle else g.title
             chart_series = f_series if f_series is not None else g.series
-            spec = build_chart_for_result(
-                grapher,
-                result_type=result_type,
-                series=chart_series,
-                title=title,
-            )
-            if spec is not None:
-                specs_for_graphs.append(spec)
+            try:
+                chart = build_chart_for_result(
+                    grapher,
+                    result_type=result_type,
+                    series=chart_series,
+                    title=title,
+                )
+            except Exception as e:
+                print(f"ERROR: LIDA failed for {result_type}: {e}")
+                traceback.print_exc()
+                chart = None
+            if chart is not None:
+                charts_for_graphs.append(chart)
 
-        if not specs_for_graphs:
+        if not charts_for_graphs:
             continue
 
-        if len(specs_for_graphs) == 1:
-            final_spec = specs_for_graphs[0]
+        if len(charts_for_graphs) == 1:
+            final_chart = charts_for_graphs[0]
         else:
-            final_spec = {
-                "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-                "vconcat": specs_for_graphs,
+            final_chart = {
+                "raster": _vstack_chart_rasters(charts_for_graphs),
+                "code": "\n\n# ---\n\n".join(
+                    c["code"] for c in charts_for_graphs if c.get("code")
+                ),
+                "library": charts_for_graphs[0].get("library"),
+                "status": True,
+                "result_type": result_type,
+                "title": None,
             }
 
         out_key = result_type
 
         if grapher.return_fig:
-            ret[out_key] = final_spec
+            ret[out_key] = {
+                "code": final_chart.get("code"),
+                "library": final_chart.get("library"),
+                "result_type": result_type,
+            }
         elif not filename:
-            ret[out_key] = render_vegalite(final_spec, fmt="png", scale=scale)
+            ret[out_key] = final_chart["raster"]
         else:
             type_filename = npf.build_filename(
                 one_test,
@@ -305,7 +354,7 @@ def plot_graphs_with_lux(grapher, graphs, filename, fileprefix, f_series=None) -
                 show_serie=False,
             )
             try:
-                save_chart(final_spec, type_filename, dpi_scale=scale, also_save_vl=True)
+                save_chart(final_chart, type_filename, save_code=True)
                 print("Graph saved to %s" % type_filename)
                 ret[out_key] = None
             except Exception as e:

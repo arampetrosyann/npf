@@ -39,7 +39,7 @@ from npf.tests.variable import replace_variables
 from npf.output.graph.variable_to_series import extract_variable_to_series
 from npf.output.graph.series_to_graph import series_to_graph
 from npf.output.graph.graphdata import GraphData
-from npf.output.graph.auto_vis import plot_graphs_with_lux
+from npf.output.graph.auto_vis import plot_graphs_with_lida
 import npf
 
 import pandas as pd
@@ -809,14 +809,14 @@ class Grapher:
 
     def plot_graphs(self, graphs, filename, fileprefix, f_series=None):
         """
-        Render graphs via Lux (Vega-Lite backend).
+        Render graphs via LIDA (LLM auto-visualization).
 
         Data transforms remain in graph()/graph_group(); this method only
-        turns GraphData into Lux Vis → Vega-Lite → PDF/PNG.
-        When f_series is provided, Lux uses that (pre series_to_graph) data
+        turns GraphData into LIDA charts → PDF/PNG.
+        When f_series is provided, LIDA uses that (pre series_to_graph) data
         so variables promoted to series identity remain real columns.
         """
-        return plot_graphs_with_lux(self, graphs, filename, fileprefix, f_series=f_series)
+        return plot_graphs_with_lida(self, graphs, filename, fileprefix, f_series=f_series)
 
     def reject_outliers(self, result, test):
         return test.reject_outliers(result)

@@ -131,9 +131,9 @@ def run(npf_script: str, series: List[str] = [], roles: Dict = {},
 
 
 def plot(results, time_series=None, argsv: List[str] = None) -> dict:
-    """Generate Vega-Lite chart specs from NPF results without re-running the experiment.
+    """Generate LIDA charts from NPF results without re-running the experiment.
 
-    Charts are produced via Lux.
+    Charts are produced via LIDA.
 
     Args:
         results:     Series results from npf.run().
@@ -141,7 +141,7 @@ def plot(results, time_series=None, argsv: List[str] = None) -> dict:
         argsv:       Extra CLI graph arguments (e.g. ["--graph-title", "My Test"]).
 
     Returns:
-        Dict mapping result-type names (e.g. "THROUGHPUT") to Vega-Lite specification
+        Dict mapping result-type names (e.g. "THROUGHPUT") to LIDA chart metadata
         dicts.
     """
     import argparse

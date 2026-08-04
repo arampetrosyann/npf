@@ -39,8 +39,9 @@ install_requires = [
     'colorama',
     'scikit-optimize',
     'lark',
-    'lux-api',
-    'vl-convert-python'
+    'lida @ file:./lida', # local LIDA
+    'openai',
+    'Pillow',
     ]
 
 setuptools.setup(

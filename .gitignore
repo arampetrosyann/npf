@@ -17,4 +17,5 @@ tmp/
 .vscode/
 .coverage
 venv
+.venv
 .vimhistory

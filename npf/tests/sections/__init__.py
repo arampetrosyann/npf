@@ -575,10 +575,10 @@ class SectionConfig(SectionVariable):
 
         # Graph options
         self.__add_dict("graph_combine_variables", {})
-        self.__add_dict("graph_subplot_results", {})
-        self.__add("graph_subplot_variable", None)
-        self.__add("graph_subplot_unique_legend", False)
-        self.__add_list("graph_display_statics", [])
+        self.__add_dict("graph_subplot_results", {}) # Not used
+        self.__add("graph_subplot_variable", None) # Not used
+        self.__add("graph_subplot_unique_legend", False) # Not used
+        self.__add_list("graph_display_statics", []) # Not used
         self.__add_list("graph_variables_as_series", [])
         self.__add("graph_variables_explicit", False)
         self.__add_list("graph_hide_variables", [])
@@ -613,6 +613,9 @@ class SectionConfig(SectionVariable):
         self.__add("legend_loc", "best")
         self.__add("graph_max_variables",3)
         self.__add_list("graph_keep_variables", [])
+        # LIDA specific options
+        self.__add("graph_openai_api_key", None)  # or OPENAI_API_KEY env variable
+        self.__add("graph_generation_library", "matplotlib")  # matplotlib|seaborn|plotly|...
 
         self.__add("legend_frameon", True)
         self.__add("legend_ncol", 1)
