@@ -28,13 +28,15 @@ from npf.output.transform.pandas import to_pandas
 def _ensure_local_lida():
     local = os.path.join(npf_root_path(), "lida")
 
-    if os.path.isdir(os.path.join(local, "lida")):
-        return local
+    if not os.path.isdir(os.path.join(local, "lida")):
+        raise RuntimeError(
+            f"Vendored LIDA fork not found at {local}. "
+            "Clone/fork LIDA into the NPF repo as ./lida."
+        )
 
-    raise RuntimeError(
-        f"Vendored LIDA fork not found at {local}. "
-        "Clone/fork LIDA into the NPF repo as ./lida."
-    )
+    if local not in sys.path:
+        sys.path.insert(0, local)
+    return local
 
 def _load_openai_api_key(grapher):
     """
@@ -56,16 +58,20 @@ def _load_openai_api_key(grapher):
 
 def _import_lida():
     _ensure_local_lida()
-    from lida import Manager, TextGenerationConfig, llm, goal_for_metric
+    # Drop a previously imported (stale) lida package if it came from site-packages - for dev
+    # for name in list(sys.modules):
+    #     if name == "lida" or name.startswith("lida."):
+    #         del sys.modules[name]
+    from lida import Manager, TextGenerationConfig, llm
 
-    return Manager, TextGenerationConfig, llm, goal_for_metric
+    return Manager, TextGenerationConfig, llm
 
 def _get_lida_manager(grapher):
-    Manager, TextGenerationConfig, llm, _goal_for_metric = _import_lida()
+    Manager, TextGenerationConfig, llm = _import_lida()
     api_key = _load_openai_api_key(grapher)
 
     if api_key is None:
-        return None, None, None
+        return None, None
 
     text_gen = llm("openai", api_key=api_key)
     manager = Manager(text_gen=text_gen)
@@ -76,7 +82,7 @@ def _get_lida_manager(grapher):
         seed=42
     )
     
-    return manager, config, _goal_for_metric
+    return manager, config
 
 def _generation_library(grapher) -> str:
     cfg = grapher.config("graph_generation_library", None)
@@ -158,9 +164,9 @@ def lida_auto_chart(
 
     library = _generation_library(grapher)
 
-    manager, textgen_config, goal_for_metric = _get_lida_manager(grapher)
+    manager, textgen_config = _get_lida_manager(grapher)
 
-    if manager is None or textgen_config is None or goal_for_metric is None:
+    if manager is None or textgen_config is None:
         return None
 
     summary = manager.summarize(
@@ -169,14 +175,24 @@ def lida_auto_chart(
         textgen_config=textgen_config,
     )
 
-    # Goal text is modified in the LIDA fork (lida/components/goal.py)
-    goal = goal_for_metric(result_type, title=title)
+    # LLM goal generation guided by the NPF result metric (see lida GoalExplorer)
+    goals = manager.goals(
+        summary,
+        n=1,
+        textgen_config=textgen_config,
+        result_type=result_type
+    )
+    if not goals:
+        print(f"WARNING: LIDA produced no goals for {result_type}")
+        return None
+    goal = goals[0]
     charts = manager.visualize(
         summary=summary,
         goal=goal,
         textgen_config=textgen_config,
         library=library,
         return_error=True,
+        title=title,
     )
 
     if not charts:
