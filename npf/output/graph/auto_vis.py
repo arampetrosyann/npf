@@ -13,6 +13,7 @@ Flow:
 from __future__ import annotations
 
 import base64
+import math
 import os
 import sys
 import traceback
@@ -76,7 +77,6 @@ def _get_lida_manager(grapher):
     text_gen = llm("openai", api_key=api_key)
     manager = Manager(text_gen=text_gen)
     config = TextGenerationConfig(
-        n=1,
         temperature=0,
         top_p=1,
         seed=42
@@ -120,6 +120,14 @@ def collect_result_types(series) -> List[str]:
             types.update(run_results.keys())
     return sorted(types)
 
+def get_n_charts(n_vars: int) -> int:
+    """
+    Number of charts to generate.
+
+    Each chart stays readable with ~3 variables.
+    """
+    return max(1, math.floor(n_vars / 3))
+
 def _chart_raster_bytes(chart) -> Optional[bytes]:
     raster = getattr(chart, "raster", None)
     if not raster:
@@ -146,28 +154,28 @@ def lida_auto_chart(
     result_type: str,
     title: Optional[str] = None,
     grapher=None,
-) -> Optional[Dict[str, Any]]:
+) -> List[Dict[str, Any]]:
     """
     Run LIDA on a multi-variable DataFrame focused on ``result_type``.
 
     Returns a dict with keys: raster (bytes), code (str), library, status.
     """
     if df is None or df.empty:
-        return None
+        return []
     if result_type not in df.columns:
-        return None
+        return []
 
     df = df.dropna(subset=[result_type])
     df.drop_duplicates(inplace=True)
     if df.empty:
-        return None
+        return []
 
     library = _generation_library(grapher)
 
     manager, textgen_config = _get_lida_manager(grapher)
 
     if manager is None or textgen_config is None:
-        return None
+        return []
 
     summary = manager.summarize(
         df,
@@ -175,51 +183,62 @@ def lida_auto_chart(
         textgen_config=textgen_config,
     )
 
+    n_vars = len([c for c in df.columns if c != result_type])
+    n_charts = get_n_charts(n_vars)
+    
     # LLM goal generation guided by the NPF result metric (see lida GoalExplorer)
     goals = manager.goals(
         summary,
-        n=1,
+        n=n_charts,
         textgen_config=textgen_config,
         result_type=result_type
     )
     if not goals:
         print(f"WARNING: LIDA produced no goals for {result_type}")
-        return None
-    goal = goals[0]
-    charts = manager.visualize(
-        summary=summary,
-        goal=goal,
-        textgen_config=textgen_config,
-        library=library,
-        return_error=True,
-        title=title,
-    )
+        return []
 
-    if not charts:
-        print(f"WARNING: LIDA produced no visualizations for {result_type}")
-        return None
+    charts_out: List[Dict[str, Any]] = []
 
-    chart = charts[0]
-    status = getattr(chart, "status", True)
-    error = getattr(chart, "error", None)
+    for i, goal in enumerate(goals):
+        chart_title = title
 
-    if status is False or error:
-        print(f"WARNING: LIDA chart error for {result_type}: {error}")
-        return None
+        charts = manager.visualize(
+            summary=summary,
+            goal=goal,
+            textgen_config=textgen_config,
+            library=library,
+            return_error=True,
+            title=chart_title,
+        )
 
-    raster = _chart_raster_bytes(chart)
-    if raster is None:
-        print(f"WARNING: LIDA chart for {result_type} has no image data")
-        return None
+        if not charts:
+            print(f"WARNING: LIDA produced no visualization {i + 1} for {result_type}")
+            continue
 
-    return {
-        "raster": raster,
-        "code": getattr(chart, "code", None),
-        "library": library,
-        "status": True,
-        "result_type": result_type,
-        "title": title,
-    }
+        chart = charts[0]
+        status = getattr(chart, "status", True)
+        error = getattr(chart, "error", None)
+
+        if status is False or error:
+            print(f"WARNING: LIDA chart error for {result_type} [{i + 1}]: {error}")
+            continue
+
+        raster = _chart_raster_bytes(chart)
+        if raster is None:
+            print(f"WARNING: LIDA chart {i + 1} for {result_type} has no image data")
+            continue
+
+        charts_out.append({
+            "raster": raster,
+            "code": getattr(chart, "code", None),
+            "library": library,
+            "status": True,
+            "result_type": result_type,
+            "title": chart_title,
+            "index": i + 1,
+        })
+
+    return charts_out
 
 def build_chart_for_result(
     grapher,
@@ -227,14 +246,14 @@ def build_chart_for_result(
     result_type: str,
     series,
     title: Optional[str],
-) -> Optional[Dict[str, Any]]:
+) -> List[Dict[str, Any]]:
     """
-    Produce one LIDA chart for a result metric.
+    Produce LIDA chart(s) for a result metric.
     """
     df = series_result_to_dataframe(series, result_type)
 
     if df.empty:
-        return None
+        return []
 
     return lida_auto_chart(
         df,
@@ -269,9 +288,10 @@ def plot_graphs_with_lida(grapher, graphs, filename, fileprefix, f_series=None) 
     """
     LIDA-based replacement for Grapher.plot_graphs.
 
-    One automatic chart per result metric. Chart data comes from ``f_series``
-    when provided (series before series_to_graph / variable-to-series extraction)
-    so all Run variables remain columns for LIDA.
+    For each result metric, generates several charts based on how many
+    independent variables are present. Chart data
+    comes from ``f_series`` when provided (series before series_to_graph /
+    variable-to-series extraction) so all Run variables remain columns for LIDA.
     """
     import npf
 
@@ -299,7 +319,7 @@ def plot_graphs_with_lida(grapher, graphs, filename, fileprefix, f_series=None) 
 
     for result_type in sorted(result_types):
         try:
-            chart = build_chart_for_result(
+            charts = build_chart_for_result(
                 grapher,
                 result_type=result_type,
                 series=chart_series,
@@ -308,38 +328,45 @@ def plot_graphs_with_lida(grapher, graphs, filename, fileprefix, f_series=None) 
         except Exception as e:
             print(f"ERROR: LIDA failed for {result_type}: {e}")
             traceback.print_exc()
-            chart = None
+            charts = []
 
-        if chart is None:
+        if not charts:
             continue
 
-        out_key = result_type
-
-        if grapher.return_fig:
-            ret[out_key] = {
-                "code": chart.get("code"),
-                "library": chart.get("library"),
-                "result_type": result_type,
-            }
-        elif not filename:
-            ret[out_key] = chart["raster"]
-        else:
-            type_filename = npf.build_filename(
-                one_test,
-                one_build,
-                filename if filename is not True else None,
-                graph.statics(),
-                "pdf",
-                type_str=(fileprefix + "-" if fileprefix else "") + out_key,
-                show_serie=False,
+        for chart in charts:
+            idx = chart.get("index", 1)
+            out_key = (
+                result_type
+                if len(charts) == 1
+                else f"{result_type}-{idx}"
             )
-            try:
-                save_chart(chart, type_filename, save_code=True)
-                print("Graph saved to %s" % type_filename)
-                ret[out_key] = None
-            except Exception as e:
-                print("ERROR : Could not draw the graph!")
-                print(e)
-                traceback.print_exc()
-                ret[out_key] = None
+
+            if grapher.return_fig:
+                ret[out_key] = {
+                    "code": chart.get("code"),
+                    "library": chart.get("library"),
+                    "result_type": result_type,
+                    "index": idx,
+                }
+            elif not filename:
+                ret[out_key] = chart["raster"]
+            else:
+                type_filename = npf.build_filename(
+                    one_test,
+                    one_build,
+                    filename if filename is not True else None,
+                    graph.statics(),
+                    "pdf",
+                    type_str=(fileprefix + "-" if fileprefix else "") + out_key,
+                    show_serie=False,
+                )
+                try:
+                    save_chart(chart, type_filename, save_code=True)
+                    print("Graph saved to %s" % type_filename)
+                    ret[out_key] = None
+                except Exception as e:
+                    print("ERROR : Could not draw the graph!")
+                    print(e)
+                    traceback.print_exc()
+                    ret[out_key] = None
     return ret
