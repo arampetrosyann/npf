@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import types
 import traceback
 import warnings
@@ -140,16 +141,89 @@ def _pick_auto_vis_list(ldf, result_type: str, Clause, n: int) -> list:
         
         picked = []
 
-        for action in ("Enhance", "Current Vis"):
-            vis_list = recs.get(action)
-            if not vis_list:
-                continue
+        for vis_list in recs.values():
             for vis in vis_list:
                 picked.append(vis)
                 if len(picked) >= n:
                     return picked
 
     return picked[:n]
+
+TIMESTAMP_RE = re.compile(
+    r"^("
+    r"\d{4}-\d{2}-\d{2}"  # 2024-01-15
+    r"(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?"  # optional time / tz
+    r"|"
+    r"\d{4}/\d{2}/\d{2}"  # 2024/01/15
+    r"(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?" # optional time
+    r"|"
+    r"\d{1,2}/\d{1,2}/\d{2,4}"  # 1/15/2024 or 15/01/24
+    r"(?:[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?" # optional time
+    r"|"
+    r"\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?"  # 14:30 or 14:30:00
+    r")$"
+)
+
+def _values_look_temporal(pd_series: pd.Series) -> bool:
+    if pd_series.empty:
+        return False
+
+    if pd_series.map(lambda v: isinstance(v, pd.Timestamp)).any():
+        return True
+
+    sample = pd_series.astype(str).str.strip().head(50)
+    if sample.str.match(r"^-?\d+(\.\d+)?$").all():
+        return False
+
+    return bool(sample.map(lambda s: bool(TIMESTAMP_RE.match(s))).mean() > 0.5)
+
+def _infer_column_lux_type(series: pd.Series) -> tuple[str, Optional[pd.Series]]:
+    if pd.api.types.is_numeric_dtype(series):
+        return "quantitative", None
+    if pd.api.types.is_bool_dtype(series):
+        return "nominal", None
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return "temporal", None
+
+    non_null = series.dropna()
+    if non_null.empty:
+        return "nominal", None
+
+    # temporal values
+    if _values_look_temporal(non_null):
+        converted = pd.to_datetime(series, errors="coerce")
+        ok = int(converted.notna().sum())
+        if ok >= max(1, int(0.9 * len(non_null))): # check if the converted series is not null for at least 90% of the non-null values
+            return "temporal", converted
+
+    # numeric values
+    numeric = pd.to_numeric(non_null, errors="coerce")
+    if numeric.notna().all():
+        converted = pd.to_numeric(series, errors="coerce")
+        finite = converted.dropna()
+        if len(finite) and (finite % 1 == 0).all():
+            try:
+                converted = converted.astype("Int64")
+            except (TypeError, ValueError):
+                pass
+        return "quantitative", converted
+
+    return "nominal", None
+
+def process_data_types_inplace(lux_df) -> None:
+    """
+    Fix Lux inferred types in place.
+    """
+    overrides: Dict[str, str] = {}
+    for col in list(lux_df.columns):
+        lux_type, converted = _infer_column_lux_type(lux_df[col])
+        if converted is not None:
+            lux_df[col] = converted
+        overrides[col] = lux_type
+
+    if overrides:
+        for col, lux_type in overrides.items():
+            lux_df.set_data_type({col: lux_type})
 
 def lux_auto_chart(
     df: pd.DataFrame,
@@ -183,6 +257,7 @@ def lux_auto_chart(
 
         ldf = lux.LuxDataFrame(df.copy())
 
+        process_data_types_inplace(ldf)
 
         vis_list = _pick_auto_vis_list(ldf, result_type, Clause, n_charts)
         for i, vis in enumerate(vis_list):

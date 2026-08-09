@@ -693,6 +693,8 @@ class Grapher:
                 transformed_series.append((test, build, new_all_results))
             series = transformed_series
 
+        f_series = series
+
         for key, method in self.configdict('var_aggregate').items():
             series = self.aggregate_variable(key=key,series=series,method=method)
             for k in key.split('+'):
@@ -757,11 +759,6 @@ class Grapher:
             v = {}
             v.update(statics)
             title=replace_variables(v, title)
-
-        # Lux should see Run variables as-is. series_to_graph /
-        # extract_variable_to_series promote a dyn var into series identity and
-        # delete it from each Run — keep a pre-extraction copy for Lux only.
-        f_series = series
 
         # If a subplot variable is defined, extract it as a serie
         if sv: #Only one supported for now
