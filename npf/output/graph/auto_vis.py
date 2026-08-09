@@ -14,6 +14,7 @@ Flow:
 from __future__ import annotations
 
 import json
+import math
 import os
 import types
 import traceback
@@ -38,14 +39,14 @@ def _ensure_lux_pandas_compat():
         sys.modules["pandas.io.gbq"] = gbq
         pd.io.gbq = gbq
 
-def _import_lux():
+def _import_lux(topk: int = 1):
     _ensure_lux_pandas_compat()
     import lux
     from lux.vis.Vis import Vis
     from lux import Clause
 
     lux.config.plotting_backend = "vegalite"
-    lux.config.topk = 1
+    lux.config.topk = max(1, int(topk))
     lux.config.number_of_bars = 20
     lux.config.plotting_scale = 2
     lux.config.sort = "descending"
@@ -83,6 +84,14 @@ def collect_result_types(series) -> List[str]:
             types.update(run_results.keys())
     return sorted(types)
 
+def get_n_charts(n_vars: int) -> int:
+    """
+    Number of charts to generate.
+
+    Each chart stays readable with ~3 variables.
+    """
+    return max(1, math.floor(n_vars / 3))
+
 def _inline_vegalite_data(spec: dict, df: pd.DataFrame) -> dict:
     """Ensure Vega-Lite carries inline values (vl-convert friendly)."""
     if "datasets" in spec and isinstance(spec.get("data"), dict) and "name" in spec["data"]:
@@ -108,9 +117,11 @@ def _vis_to_vegalite(vis, df: pd.DataFrame, title: Optional[str] = None) -> dict
         spec["title"] = title
     return spec
 
-def _pick_auto_vis(ldf, result_type: str, Clause):
+def _pick_auto_vis_list(ldf, result_type: str, Clause, n: int) -> list:
+    """Collect up to ``n`` charts for the result metric."""
     var_cols = [c for c in ldf.columns if c != result_type and c != "build"]
     max_wildcards = min(2, len(var_cols))
+    n = max(1, int(n))
 
     for n_wildcards in range(max_wildcards, -1, -1):
         intent = [result_type] + [Clause("?")] * n_wildcards
@@ -126,50 +137,62 @@ def _pick_auto_vis(ldf, result_type: str, Clause):
         except Exception as e:
             print(f"WARNING: Lux recommendation failed for intent {intent}: {e}")
             continue
+        
+        picked = []
 
-        vis = None
+        for action in ("Enhance", "Current Vis"):
+            vis_list = recs.get(action)
+            if not vis_list:
+                continue
+            for vis in vis_list:
+                picked.append(vis)
+                if len(picked) >= n:
+                    return picked
 
-        for vislist in (recs or {}).values():
-            if vislist and len(vislist) > 0:
-                vis = vislist[0]
-                break
-
-        if vis is not None:
-            return vis
-
-    return None
+    return picked[:n]
 
 def lux_auto_chart(
     df: pd.DataFrame,
     *,
     result_type: str,
     title: Optional[str] = None,
-) -> Optional[dict]:
-    """Run Lux automatically on a multi-variable DataFrame; return Vega-Lite dict."""
+) -> List[dict]:
+    """
+    Run Lux on a multi-variable DataFrame focused on ``result_type``.
+
+    Returns Vega-Lite spec(s).
+    """
     if df is None or df.empty:
-        return None
+        return []
     if result_type not in df.columns:
-        return None
+        return []
 
     df = df.dropna(subset=[result_type])
     df.drop_duplicates(inplace=True)
     if df.empty:
-        return None
+        return []
 
-    lux, _Vis, Clause = _import_lux()
+    n_vars = len([c for c in df.columns if c != result_type])
+    n_charts = get_n_charts(n_vars)
+
+    lux, _Vis, Clause = _import_lux(topk=n_charts)
+    specs: List[dict] = []
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
+
         ldf = lux.LuxDataFrame(df.copy())
-        print(f"{ldf}")
-        vis = _pick_auto_vis(ldf, result_type, Clause)
-        print(f"ldf.columns: {ldf.columns}")
-        print(f"ldf.dtypes: {ldf.dtypes}")
-        print(f"ldf.intent: {ldf.intent}")
-        print(f"vis: {vis}")
-        if vis is None:
-            print(f"WARNING: Lux produced no visualizations for {result_type}")
-            return None
-        return _vis_to_vegalite(vis, ldf, title=title)
+
+
+        vis_list = _pick_auto_vis_list(ldf, result_type, Clause, n_charts)
+        for i, vis in enumerate(vis_list):
+            chart_title = title
+
+            specs.append(_vis_to_vegalite(vis, ldf, title=chart_title))
+
+    if not specs:
+        print(f"WARNING: Lux produced no visualizations for {result_type}")
+    return specs
 
 def build_chart_for_result(
     grapher,
@@ -177,14 +200,14 @@ def build_chart_for_result(
     result_type: str,
     series,
     title: Optional[str],
-) -> Optional[dict]:
+) -> List[dict]:
     """
-    Produce a Vega-Lite spec for one result metric via Lux auto-visualization.
+    Produce Vega-Lite spec(s) for one result metric via Lux auto-visualization.
     """
     df = series_result_to_dataframe(series, result_type)
 
     if df.empty:
-        return None
+        return []
 
     return lux_auto_chart(df, result_type=result_type, title=title)
 
@@ -230,9 +253,9 @@ def plot_graphs_with_lux(grapher, graphs, filename, fileprefix, f_series=None) -
     """
     Lux-based replacement for Grapher.plot_graphs.
 
-    One automatic chart per result metric. Chart data comes from ``f_series``
-    when provided (series before series_to_graph / variable-to-series extraction)
-    so all Run variables remain columns for Lux.
+    For each result metric, generates several charts based on how many
+    independent variables are present. Chart data comes from ``f_series`` when provided (series before series_to_graph /
+    variable-to-series extraction) so all Run variables remain columns for Lux.
     """
     import npf
 
@@ -259,38 +282,49 @@ def plot_graphs_with_lux(grapher, graphs, filename, fileprefix, f_series=None) -
     result_types = collect_result_types(chart_series)
 
     for result_type in sorted(result_types):
-        spec = build_chart_for_result(
-            grapher,
-            result_type=result_type,
-            series=chart_series,
-            title=title,
-        )
-        if spec is None:
+        try:
+            specs = build_chart_for_result(
+                grapher,
+                result_type=result_type,
+                series=chart_series,
+                title=title,
+            )
+        except Exception as e:
+            print(f"ERROR: Lux failed for {result_type}: {e}")
+            traceback.print_exc()
+            specs = []
+
+        if not specs:
             continue
 
-        out_key = result_type
-
-        if grapher.return_fig:
-            ret[out_key] = spec
-        elif not filename:
-            ret[out_key] = render_vegalite(spec, fmt="png", scale=scale)
-        else:
-            type_filename = npf.build_filename(
-                one_test,
-                one_build,
-                filename if filename is not True else None,
-                graph.statics(),
-                "pdf",
-                type_str=(fileprefix + "-" if fileprefix else "") + out_key,
-                show_serie=False,
+        for i, spec in enumerate(specs, start=1):
+            out_key = (
+                result_type
+                if len(specs) == 1
+                else f"{result_type}-{i}"
             )
-            try:
-                save_chart(spec, type_filename, dpi_scale=scale, also_save_vl=True)
-                print("Graph saved to %s" % type_filename)
-                ret[out_key] = None
-            except Exception as e:
-                print("ERROR : Could not draw the graph!")
-                print(e)
-                traceback.print_exc()
-                ret[out_key] = None
+
+            if grapher.return_fig:
+                ret[out_key] = spec
+            elif not filename:
+                ret[out_key] = render_vegalite(spec, fmt="pdf", scale=scale)
+            else:
+                type_filename = npf.build_filename(
+                    one_test,
+                    one_build,
+                    filename if filename is not True else None,
+                    graph.statics(),
+                    "pdf",
+                    type_str=(fileprefix + "-" if fileprefix else "") + out_key,
+                    show_serie=False,
+                )
+                try:
+                    save_chart(spec, type_filename, dpi_scale=scale, also_save_vl=True)
+                    print("Graph saved to %s" % type_filename)
+                    ret[out_key] = None
+                except Exception as e:
+                    print("ERROR : Could not draw the graph!")
+                    print(e)
+                    traceback.print_exc()
+                    ret[out_key] = None
     return ret
