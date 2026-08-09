@@ -141,7 +141,10 @@ def _pick_auto_vis_list(ldf, result_type: str, Clause, n: int) -> list:
         
         picked = []
 
-        for vis_list in recs.values():
+        for action in ("Current Vis", "Enhance"):
+            vis_list = recs.get(action)
+            if not vis_list:
+                continue
             for vis in vis_list:
                 picked.append(vis)
                 if len(picked) >= n:
@@ -178,7 +181,10 @@ def _values_look_temporal(pd_series: pd.Series) -> bool:
     return bool(sample.map(lambda s: bool(TIMESTAMP_RE.match(s))).mean() > 0.5)
 
 def _infer_column_lux_type(series: pd.Series) -> tuple[str, Optional[pd.Series]]:
+    # if numeric and number of unique values is less than 3 and greater than 1, return nominal!
     if pd.api.types.is_numeric_dtype(series):
+        if series.nunique(dropna=True) > 1 and series.nunique(dropna=True) <= 3:
+            return "nominal", None
         return "quantitative", None
     if pd.api.types.is_bool_dtype(series):
         return "nominal", None
@@ -206,6 +212,8 @@ def _infer_column_lux_type(series: pd.Series) -> tuple[str, Optional[pd.Series]]
                 converted = converted.astype("Int64")
             except (TypeError, ValueError):
                 pass
+        if converted.nunique(dropna=True) > 1 and converted.nunique(dropna=True) <= 3:
+            return "nominal", converted
         return "quantitative", converted
 
     return "nominal", None
@@ -243,6 +251,10 @@ def lux_auto_chart(
 
     df = df.dropna(subset=[result_type])
     df.drop_duplicates(inplace=True)
+
+    if "build" in df.columns and df["build"].nunique() == 1:
+        df.drop(columns=["build"], inplace=True)
+
     if df.empty:
         return []
 
