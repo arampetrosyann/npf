@@ -613,6 +613,7 @@ class SectionConfig(SectionVariable):
         self.__add("legend_loc", "best")
         self.__add("graph_max_variables",3)
         self.__add_list("graph_keep_variables", [])
+        self.__add("graph_topk", None)  # Lux charts per metric; None = default
 
         self.__add("legend_frameon", True)
         self.__add("legend_ncol", 1)
