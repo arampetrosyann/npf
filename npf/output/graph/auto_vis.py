@@ -93,6 +93,16 @@ def get_n_charts(n_vars: int) -> int:
     """
     return max(1, math.floor(n_vars / 3))
 
+def resolve_n_charts(grapher, n_vars: int) -> int:
+    topk = grapher.config("graph_topk")
+    if topk is None or topk == "":
+        return get_n_charts(n_vars)
+    try:
+        return max(1, int(topk))
+    except (TypeError, ValueError):
+        print(f"WARNING: Invalid graph_topk={topk!r}, falling back to auto")
+        return get_n_charts(n_vars)
+
 def _inline_vegalite_data(spec: dict, df: pd.DataFrame) -> dict:
     """Ensure Vega-Lite carries inline values (vl-convert friendly)."""
     if "datasets" in spec and isinstance(spec.get("data"), dict) and "name" in spec["data"]:
@@ -238,6 +248,7 @@ def lux_auto_chart(
     *,
     result_type: str,
     title: Optional[str] = None,
+    grapher=None,
 ) -> List[dict]:
     """
     Run Lux on a multi-variable DataFrame focused on ``result_type``.
@@ -259,7 +270,7 @@ def lux_auto_chart(
         return []
 
     n_vars = len([c for c in df.columns if c != result_type])
-    n_charts = get_n_charts(n_vars)
+    n_charts = resolve_n_charts(grapher, n_vars)
 
     lux, _Vis, Clause = _import_lux(topk=n_charts)
     specs: List[dict] = []
@@ -296,7 +307,7 @@ def build_chart_for_result(
     if df.empty:
         return []
 
-    return lux_auto_chart(df, result_type=result_type, title=title)
+    return lux_auto_chart(df, result_type=result_type, title=title, grapher=grapher)
 
 def render_vegalite(
     spec: dict,
