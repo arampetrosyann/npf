@@ -613,6 +613,7 @@ class SectionConfig(SectionVariable):
         self.__add("legend_loc", "best")
         self.__add("graph_max_variables",3)
         self.__add_list("graph_keep_variables", [])
+        self.__add("graph_topk", None)  # charts per metric; None = default
         # LIDA specific options
         self.__add("graph_openai_api_key", None)  # or OPENAI_API_KEY env variable
         self.__add("graph_generation_library", "matplotlib")  # matplotlib|seaborn|plotly|...

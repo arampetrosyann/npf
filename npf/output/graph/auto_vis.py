@@ -2,7 +2,7 @@
 LIDA → automatic chart generation for NPF.
 
 Fully automatic: plot type, marks, scales, and layout are chosen by LIDA (LLM).
-Configurable via %config: graph_openai_api_key, graph_generation_library.
+Configurable via %config: graph_openai_api_key, graph_generation_library, graph_topk.
 
 Flow:
   series → to_pandas → one-metric DataFrame (real variable columns)
@@ -128,6 +128,16 @@ def get_n_charts(n_vars: int) -> int:
     """
     return max(1, math.floor(n_vars / 3))
 
+def resolve_n_charts(grapher, n_vars: int) -> int:
+    topk = grapher.config("graph_topk")
+    if topk is None or topk == "":
+        return get_n_charts(n_vars)
+    try:
+        return max(1, int(topk))
+    except (TypeError, ValueError):
+        print(f"WARNING: Invalid graph_topk={topk!r}, falling back to auto")
+        return get_n_charts(n_vars)
+
 def _chart_raster_bytes(chart) -> Optional[bytes]:
     raster = getattr(chart, "raster", None)
     if not raster:
@@ -153,7 +163,7 @@ def lida_auto_chart(
     *,
     result_type: str,
     title: Optional[str] = None,
-    grapher=None,
+    grapher,
 ) -> List[Dict[str, Any]]:
     """
     Run LIDA on a multi-variable DataFrame focused on ``result_type``.
@@ -167,6 +177,10 @@ def lida_auto_chart(
 
     df = df.dropna(subset=[result_type])
     df.drop_duplicates(inplace=True)
+
+    if "build" in df.columns and df["build"].nunique() == 1:
+        df.drop(columns=["build"], inplace=True)
+
     if df.empty:
         return []
 
@@ -184,7 +198,7 @@ def lida_auto_chart(
     )
 
     n_vars = len([c for c in df.columns if c != result_type])
-    n_charts = get_n_charts(n_vars)
+    n_charts = resolve_n_charts(grapher, n_vars)
     
     # LLM goal generation guided by the NPF result metric (see lida GoalExplorer)
     goals = manager.goals(
