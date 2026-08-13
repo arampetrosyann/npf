@@ -103,6 +103,27 @@ def resolve_n_charts(grapher, n_vars: int) -> int:
         print(f"WARNING: Invalid graph_topk={topk!r}, falling back to auto")
         return get_n_charts(n_vars)
 
+def resolve_graph_intent(grapher, columns) -> Optional[List[str]]:
+    """
+    Read ``graph_intent`` from %config as an explicit Lux intent column list.
+    """
+    raw = grapher.configlist("graph_intent", [])
+    if not raw:
+        return None
+
+    cols = set(columns)
+    intent: List[str] = []
+    for item in raw:
+        name = str(item).strip()
+        if not name:
+            continue
+        if name not in cols:
+            print(f"WARNING: graph_intent column {name!r} not in data, ignoring")
+            continue
+        if name not in intent:
+            intent.append(name)
+    return intent or None
+
 def _inline_vegalite_data(spec: dict, df: pd.DataFrame) -> dict:
     """Ensure Vega-Lite carries inline values (vl-convert friendly)."""
     if "datasets" in spec and isinstance(spec.get("data"), dict) and "name" in spec["data"]:
@@ -117,48 +138,117 @@ def _inline_vegalite_data(spec: dict, df: pd.DataFrame) -> dict:
     spec.pop("vislib", None)
     return spec
 
-def _vis_to_vegalite(vis, df: pd.DataFrame, title: Optional[str] = None) -> dict:
+def _field_display_name(grapher, field: str, result_type: Optional[str]) -> str:
+    """Map a DataFrame column to its ``var_names`` label when available."""
+    if not field:
+        return field
+    if result_type and field == result_type:
+        return grapher.var_name("result", result_type=result_type)
+    return grapher.var_name(field)
+
+def _apply_var_name_to_encoding_channel(enc: dict, grapher, result_type: Optional[str]) -> None:
+    if not isinstance(enc, dict):
+        return
+    field = enc.get("field")
+    if not isinstance(field, str) or not field:
+        return
+    label = _field_display_name(grapher, field, result_type)
+    enc["title"] = label
+    if isinstance(enc.get("axis"), dict):
+        enc["axis"]["title"] = label
+    if isinstance(enc.get("legend"), dict):
+        enc["legend"]["title"] = label
+
+def _apply_var_names_to_vegalite(spec: dict, grapher, result_type: Optional[str] = None) -> dict:
+    """
+    Rewrite Vega-Lite axis/legend titles using NPF ``var_names``.
+    """
+    if grapher is None or not isinstance(spec, dict):
+        return spec
+
+    encoding = spec.get("encoding")
+    if isinstance(encoding, dict):
+        for enc in encoding.values():
+            if isinstance(enc, list):
+                for item in enc:
+                    _apply_var_name_to_encoding_channel(item, grapher, result_type)
+            else:
+                _apply_var_name_to_encoding_channel(enc, grapher, result_type)
+
+    for key in ("layer", "hconcat", "vconcat", "concat"):
+        nested = spec.get(key)
+        if isinstance(nested, list):
+            for sub in nested:
+                _apply_var_names_to_vegalite(sub, grapher, result_type)
+
+    if isinstance(spec.get("spec"), dict):
+        _apply_var_names_to_vegalite(spec["spec"], grapher, result_type)
+
+    return spec
+
+def _vis_to_vegalite(
+    vis,
+    df: pd.DataFrame,
+    title: Optional[str] = None,
+    grapher=None,
+    result_type: Optional[str] = None,
+) -> dict:
     spec = vis.to_vegalite(prettyOutput=False)
     if isinstance(spec, str):
         spec = json.loads(spec)
     if not isinstance(spec, dict):
         raise RuntimeError(f"Unexpected Vega-Lite type: {type(spec)}")
     spec = _inline_vegalite_data(spec, df)
+    spec = _apply_var_names_to_vegalite(spec, grapher, result_type=result_type)
     if title:
         spec["title"] = title
     return spec
 
-def _pick_auto_vis_list(ldf, result_type: str, Clause, n: int) -> list:
+def _clear_lux_recs(ldf) -> None:
+    if hasattr(ldf, "_recommendation"):
+        ldf._recommendation = {}
+    if hasattr(ldf, "_rec_info"):
+        ldf._rec_info = []
+
+
+def _collect_vis_from_recs(ldf, intent, n: int) -> list:
+    """Set Lux intent, then collect up to ``n`` visualizations from recommendations."""
+    ldf.intent = intent
+    _clear_lux_recs(ldf)
+
+    try:
+        recs = ldf.recommendation or {}
+    except Exception as e:
+        print(f"WARNING: Lux recommendation failed for intent {intent}: {e}")
+        return []
+
+    picked = []
+    for action in ("Current Vis", "Enhance"):
+        vis_list = recs.get(action)
+        if not vis_list:
+            continue
+        for vis in vis_list:
+            picked.append(vis)
+            if len(picked) >= n:
+                return picked
+    return picked[:n]
+
+def _pick_auto_vis_list(ldf, result_type: str, Clause, n: int, user_intent=None) -> list:
     """Collect up to ``n`` charts for the result metric."""
-    var_cols = [c for c in ldf.columns if c != result_type and c != "build"]
-    max_wildcards = min(2, len(var_cols))
     n = max(1, int(n))
 
+    if user_intent:
+        return _collect_vis_from_recs(ldf, list(user_intent), n)
+
+    var_cols = [c for c in ldf.columns if c != result_type and c != "build"]
+    max_wildcards = min(2, len(var_cols))
+    picked = []
+
     for n_wildcards in range(max_wildcards, -1, -1):
-        intent = [result_type] + [Clause("?")] * n_wildcards
-        ldf.intent = intent
-        # Clear cached recs so Lux recomputes for this intent
-        if hasattr(ldf, "_recommendation"):
-            ldf._recommendation = {}
-        if hasattr(ldf, "_rec_info"):
-            ldf._rec_info = []
-
-        try:
-            recs = ldf.recommendation or {}
-        except Exception as e:
-            print(f"WARNING: Lux recommendation failed for intent {intent}: {e}")
-            continue
-        
-        picked = []
-
-        for action in ("Current Vis", "Enhance"):
-            vis_list = recs.get(action)
-            if not vis_list:
-                continue
-            for vis in vis_list:
-                picked.append(vis)
-                if len(picked) >= n:
-                    return picked
+        intent = [Clause(attribute=result_type, channel='y')] + [Clause("?")] * n_wildcards
+        picked = _collect_vis_from_recs(ldf, intent, n)
+        if picked:
+            return picked
 
     return picked[:n]
 
@@ -282,11 +372,23 @@ def lux_auto_chart(
 
         process_data_types_inplace(ldf)
 
-        vis_list = _pick_auto_vis_list(ldf, result_type, Clause, n_charts)
+        user_intent = resolve_graph_intent(grapher, ldf.columns)
+
+        vis_list = _pick_auto_vis_list(
+            ldf, result_type, Clause, n_charts, user_intent=user_intent
+        )
         for i, vis in enumerate(vis_list):
             chart_title = title
 
-            specs.append(_vis_to_vegalite(vis, ldf, title=chart_title))
+            specs.append(
+                _vis_to_vegalite(
+                    vis,
+                    ldf,
+                    title=chart_title,
+                    grapher=grapher,
+                    result_type=result_type,
+                )
+            )
 
     if not specs:
         print(f"WARNING: Lux produced no visualizations for {result_type}")

@@ -615,6 +615,7 @@ class SectionConfig(SectionVariable):
         self.__add_list("graph_keep_variables", [])
         self.__add("graph_topk", None)  # Lux charts per metric; None = auto (n_vars // 3)
         self.__add("graph_backend", "default")  # default | lux
+        self.__add_list("graph_intent", [])  # Lux intent columns
 
         self.__add("legend_frameon", True)
         self.__add("legend_ncol", 1)
